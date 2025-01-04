@@ -93,7 +93,7 @@ jobs:
         if: always()
         run: |
           echo "Stopping container ${{ matrix.container }}..."
-          docker stop test-container-${{ matrix.container }
+          docker stop test-container-${{ matrix.container }}
 
 #      - name: Test
 #        run: go run gotest.tools/gotestsum@latest --junitfile unit-tests.xml --format pkgname -- ./...
