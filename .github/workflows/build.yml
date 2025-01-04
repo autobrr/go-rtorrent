@@ -54,15 +54,6 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-#      - name: Start Docker Container
-#        id: start-container
-#        run: |
-#          docker run -d --rm \
-#            --name test-container-${{ matrix.container }} \
-#            ${{ matrix.container }}
-#        env:
-#          DOCKER_IMAGE: ${{ matrix.container }}
-
       - name: Start Docker Container
         id: start-container
         run: |
@@ -72,18 +63,6 @@ jobs:
             ${{ matrix.config.container_image }}
         env:
           DEFAULT_RPC_PORT: 8000
-
-#      - name: Wait for Docker Container to be Ready
-#        run: |
-#          echo "Waiting for container to initialize..."
-#          sleep 45 # Adjust this as needed if your container has startup processes
-
-#      - name: Wait for Container Startup
-#        run: |
-#          until docker logs test-container-${{ matrix.config.container_name }} | grep "ready to handle connections"; do
-#          echo "Waiting for container to be ready..."
-#          sleep 5
-#          done
 
       - name: Wait for Container Health to be Healthy
         run: |
@@ -104,8 +83,7 @@ jobs:
 
       - name: Run Tests
         env:
-#          RTORRENT_TEST_URL: $((http://localhost:5000+${{ matrix.containerIndex }}/RPC2))
-          RTORRENT_TEST_URL: $((http://localhost:${{ matrix.config.container_port }}/RPC2))
+          RTORRENT_TEST_URL: http://localhost:${{ matrix.config.container_port }}/RPC2
         run: |
           echo "Running tests against container ${{ matrix.config.container_name }}..."
           go run gotest.tools/gotestsum@latest --junitfile unit-tests-${{ matrix.config.container_name }}.xml --format pkgname -- ./...
@@ -115,9 +93,6 @@ jobs:
         run: |
           echo "Stopping container ${{ matrix.config.container_name }}..."
           docker stop test-container-${{ matrix.config.container_name }}
-
-#      - name: Test
-#        run: go run gotest.tools/gotestsum@latest --junitfile unit-tests.xml --format pkgname -- ./...
 
       - name: Test Summary
         uses: test-summary/action@v2
