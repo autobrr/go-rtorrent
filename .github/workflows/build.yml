@@ -78,12 +78,29 @@ jobs:
 #          echo "Waiting for container to initialize..."
 #          sleep 45 # Adjust this as needed if your container has startup processes
 
-      - name: Wait for Container Startup
+#      - name: Wait for Container Startup
+#        run: |
+#          until docker logs test-container-${{ matrix.config.container_name }} | grep "ready to handle connections"; do
+#          echo "Waiting for container to be ready..."
+#          sleep 5
+#          done
+
+      - name: Wait for Container Health to be Healthy
         run: |
-          until docker logs test-container-${{ matrix.config.container_name }} | grep "ready to handle connections"; do
-          echo "Waiting for container to be ready..."
+          echo "Waiting for container health..."
+          for i in {1..10}; do
+          STATUS=$(docker inspect --format='{{.State.Health.Status}}' test-container-${{ matrix.config.container_name }})
+          echo "Current status: $STATUS"
+          if [ "$STATUS" = "healthy" ]; then
+           echo "Container is healthy!"
+           exit 0
+          fi
+          echo "Still waiting..."
           sleep 5
           done
+          echo "Container did not become healthy within the timeout!"
+          docker logs test-container-${{ matrix.config.container_name }}
+          exit 1
 
       - name: Run Tests
         env:
