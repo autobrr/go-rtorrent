@@ -68,10 +68,10 @@ jobs:
         run: |
           docker run -d --rm \
             --name test-container-${{ matrix.config.container_name }} \
-            -p ${{ matrix.config.container_port }}:${DEFAULT_CONTAINER_PORT} \
+            -p ${{ matrix.config.container_port }}:${DEFAULT_RPC_PORT} \
             ${{ matrix.config.container_image }}
         env:
-          DEFAULT_CONTAINER_PORT: 8080
+          DEFAULT_RPC_PORT: 8000
 
 #      - name: Wait for Docker Container to be Ready
 #        run: |
