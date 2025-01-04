@@ -2,6 +2,7 @@ package rtorrent
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
@@ -15,7 +16,17 @@ func TestRTorrent(t *testing.T) {
 		These tests rely on a local instance of rtorrent to be running in a clean state.
 		Use the included `test.sh` script to run these tests.
 	*/
-	client := NewClient(Config{Addr: "http://localhost:8000/RPC2", TLSSkipVerify: false})
+	addr := os.Getenv("RTORRENT_TEST_URL")
+
+	slog.Info("RTORRENT_TEST_URL from env", slog.String("addr", addr))
+
+	if addr == "" {
+		addr = "http://localhost:8000/RPC2"
+
+		slog.Info("RTORRENT_TEST_URL from env empty, fallback to default", slog.String("addr", addr))
+	}
+
+	client := NewClient(Config{Addr: addr, TLSSkipVerify: false})
 	//client := New("http://localhost:8000", false)
 	maxRetries := 60
 

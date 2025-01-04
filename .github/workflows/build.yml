@@ -1,0 +1,104 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - "master"
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/images/**'
+      - 'config.yaml'
+      - 'docker-compose.yml'
+      - 'Makefile'
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/images/**'
+      - 'config.yaml'
+      - 'docker-compose.yml'
+      - 'Makefile'
+      - '**.md'
+
+env:
+  GO_VERSION: '1.23'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        container:
+          - "docker.io/crazymax/rtorrent-rutorrent:latest"
+          - "docker.io/crazymax/rtorrent-rutorrent:4.3.1-0.9.8_3-0.13.8_2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+#      - name: Start Docker Container
+#        id: start-container
+#        run: |
+#          docker run -d --rm \
+#            --name test-container-${{ matrix.container }} \
+#            ${{ matrix.container }}
+#        env:
+#          DOCKER_IMAGE: ${{ matrix.container }}
+
+      - name: Start Docker Container
+        id: start-container
+        run: |
+          PORT=$((5000+${{ matrix.containerIndex }})) # Dynamically set port
+          docker run -d --rm \
+            --name test-container-${{ matrix.container }} \
+            -p $PORT:${DEFAULT_CONTAINER_PORT} \
+            ${{ matrix.container }}
+        env:
+          DEFAULT_CONTAINER_PORT: 8080
+
+#      - name: Wait for Docker Container to be Ready
+#        run: |
+#          echo "Waiting for container to initialize..."
+#          sleep 45 # Adjust this as needed if your container has startup processes
+
+      - name: Wait for Container Startup
+        run: |
+          until docker logs test-container-${{ matrix.container }} | grep "ready to handle connections"; do
+          echo "Waiting for container to be ready..."
+          sleep 5
+          done
+
+      - name: Run Tests
+        env:
+          RTORRENT_TEST_URL: $((http://localhost:5000+${{ matrix.containerIndex }}/RPC2))
+        run: |
+          echo "Running tests against container ${{ matrix.container }}..."
+          go run gotest.tools/gotestsum@latest --junitfile unit-tests-${{ matrix.container }}.xml --format pkgname -- ./...
+
+      - name: Stop Docker Container
+        if: always()
+        run: |
+          echo "Stopping container ${{ matrix.container }}..."
+          docker stop test-container-${{ matrix.container }
+
+#      - name: Test
+#        run: go run gotest.tools/gotestsum@latest --junitfile unit-tests.xml --format pkgname -- ./...
+
+      - name: Test Summary
+        uses: test-summary/action@v2
+        with:
+          paths: "unit-tests.xml"
