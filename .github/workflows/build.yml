@@ -35,9 +35,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        container:
-          - "docker.io/crazymax/rtorrent-rutorrent:latest"
-          - "docker.io/crazymax/rtorrent-rutorrent:4.3.1-0.9.8_3-0.13.8_2"
+        config:
+          - container_image: "docker.io/crazymax/rtorrent-rutorrent:latest"
+            container_port: 8000
+            container_name: latest
+          - container_image: "docker.io/crazymax/rtorrent-rutorrent:4.3.1-0.9.8_3-0.13.8_2"
+            container_port: 8001
+            container_name: legacy
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,11 +66,11 @@ jobs:
       - name: Start Docker Container
         id: start-container
         run: |
-          PORT=$((5000+${{ matrix.containerIndex }})) # Dynamically set port
+#          PORT=$((5000+${{ matrix.containerIndex }})) # Dynamically set port
           docker run -d --rm \
-            --name test-container-${{ matrix.container }} \
-            -p $PORT:${DEFAULT_CONTAINER_PORT} \
-            ${{ matrix.container }}
+            --name test-container-${{ matrix.config.container_name }} \
+            -p ${{ matrix.config.container_port }}:${DEFAULT_CONTAINER_PORT} \
+            ${{ matrix.config.container_image }}
         env:
           DEFAULT_CONTAINER_PORT: 8080
 
@@ -77,23 +81,24 @@ jobs:
 
       - name: Wait for Container Startup
         run: |
-          until docker logs test-container-${{ matrix.container }} | grep "ready to handle connections"; do
+          until docker logs test-container-${{ matrix.config.container_name }} | grep "ready to handle connections"; do
           echo "Waiting for container to be ready..."
           sleep 5
           done
 
       - name: Run Tests
         env:
-          RTORRENT_TEST_URL: $((http://localhost:5000+${{ matrix.containerIndex }}/RPC2))
+#          RTORRENT_TEST_URL: $((http://localhost:5000+${{ matrix.containerIndex }}/RPC2))
+          RTORRENT_TEST_URL: $((http://localhost:${{ matrix.config.container_port }}/RPC2))
         run: |
-          echo "Running tests against container ${{ matrix.container }}..."
-          go run gotest.tools/gotestsum@latest --junitfile unit-tests-${{ matrix.container }}.xml --format pkgname -- ./...
+          echo "Running tests against container ${{ matrix.config.container_name }}..."
+          go run gotest.tools/gotestsum@latest --junitfile unit-tests-${{ matrix.config.container_name }}.xml --format pkgname -- ./...
 
       - name: Stop Docker Container
         if: always()
         run: |
-          echo "Stopping container ${{ matrix.container }}..."
-          docker stop test-container-${{ matrix.container }}
+          echo "Stopping container ${{ matrix.config.container_name }}..."
+          docker stop test-container-${{ matrix.config.container_name }}
 
 #      - name: Test
 #        run: go run gotest.tools/gotestsum@latest --junitfile unit-tests.xml --format pkgname -- ./...
