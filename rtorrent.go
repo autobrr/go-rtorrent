@@ -314,12 +314,12 @@ func (r *Client) AddTorrent(ctx context.Context, data []byte, extraArgs ...*Fiel
 }
 
 func (r *Client) add(ctx context.Context, cmd string, data []byte, extraArgs ...*FieldValue) error {
-	args := []interface{}{data}
+	args := []interface{}{"", data}
 	for _, v := range extraArgs {
 		args = append(args, v.String())
 	}
 
-	_, err := r.xmlrpcClient.Call(ctx, cmd, "", args)
+	_, err := r.xmlrpcClient.Call(ctx, cmd, args...)
 	if err != nil {
 		return errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", cmd))
 	}
