@@ -111,6 +111,7 @@ type Torrent struct {
 	Path      string
 	Size      int
 	Label     string
+	Message   string
 	Completed bool
 	Ratio     float64
 	Created   time.Time
@@ -182,6 +183,8 @@ const (
 	DFinishedTime Field = "d.timestamp.finished"
 	// DStartedTime represents the date the torrent started downloading
 	DStartedTime Field = "d.timestamp.started"
+	// DMessage represents the message of a "Downloading Item"
+	DMessage Field = "d.message"
 
 	// FPath represents the path of a "File Item"
 	FPath Field = "f.path"
@@ -213,7 +216,7 @@ func (f *FieldValue) String() string {
 
 // Pretty returns a formatted string representing this Torrent
 func (t *Torrent) Pretty() string {
-	return fmt.Sprintf("Torrent:\n\tHash: %v\n\tName: %v\n\tPath: %v\n\tLabel: %v\n\tSize: %v bytes\n\tCompleted: %v\n\tRatio: %v\n", t.Hash, t.Name, t.Path, t.Label, t.Size, t.Completed, t.Ratio)
+	return fmt.Sprintf("Torrent:\n\tHash: %v\n\tName: %v\n\tPath: %v\n\tLabel: %v\n\tMessage: %v\n\tSize: %v bytes\n\tCompleted: %v\n\tRatio: %v\n", t.Hash, t.Name, t.Path, t.Label, t.Message, t.Size, t.Completed, t.Ratio)
 }
 
 // Pretty returns a formatted string representing this File
@@ -418,7 +421,7 @@ func (r *Client) UpRate(ctx context.Context) (int, error) {
 
 // GetTorrents returns all the torrents reported by this Client instance
 func (r *Client) GetTorrents(ctx context.Context, view View) ([]Torrent, error) {
-	args := []interface{}{"", string(view), DName.Query(), DSizeInBytes.Query(), DHash.Query(), DLabel.Query(), DDirectory.Query(), DIsActive.Query(), DComplete.Query(), DRatio.Query(), DCreationTime.Query(), DFinishedTime.Query(), DStartedTime.Query()}
+	args := []interface{}{"", string(view), DName.Query(), DSizeInBytes.Query(), DHash.Query(), DLabel.Query(), DDirectory.Query(), DIsActive.Query(), DComplete.Query(), DRatio.Query(), DCreationTime.Query(), DFinishedTime.Query(), DStartedTime.Query(), DMessage.Query()}
 	results, err := r.xmlrpcClient.Call(ctx, "d.multicall2", args...)
 	var torrents []Torrent
 	if err != nil {
@@ -438,6 +441,7 @@ func (r *Client) GetTorrents(ctx context.Context, view View) ([]Torrent, error) 
 				Created:   time.Unix(int64(torrentData[8].(int)), 0),
 				Finished:  time.Unix(int64(torrentData[9].(int)), 0),
 				Started:   time.Unix(int64(torrentData[10].(int)), 0),
+				Message:   torrentData[11].(string),
 			})
 		}
 	}
@@ -501,7 +505,13 @@ func (r *Client) GetTorrent(ctx context.Context, hash string) (Torrent, error) {
 	if err != nil {
 		return t, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", string(DStartedTime)))
 	}
-	t.Created = time.Unix(int64(results.([]interface{})[0].(int)), 0)
+	t.Started = time.Unix(int64(results.([]interface{})[0].(int)), 0)
+	// Message
+	results, err = r.xmlrpcClient.Call(ctx, string(DMessage), t.Hash)
+	if err != nil {
+		return t, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", string(DMessage)))
+	}
+	t.Message = results.([]interface{})[0].(string)
 
 	return t, nil
 }
