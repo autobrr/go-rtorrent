@@ -73,10 +73,29 @@ func TestRTorrent(t *testing.T) {
 	})
 
 	t.Run("views", func(t *testing.T) {
-		views, err := client.Views(ctx)
-		require.NoError(t, err)
+		// ruTorrent's ratio plugin inserts its ratio groups as persistent views rat_0 to rat_7,
+		// which can happen some time after rTorrent starts, so retry until they show up
+		var views []View
+		var err error
+		retries := maxRetries
+		for i := 0; i <= retries; i++ {
+			views, err = client.Views(ctx)
+			require.NoError(t, err)
+			found := false
+			for _, v := range views {
+				if v == View("rat_1") {
+					found = true
+				}
+			}
+			if found {
+				break
+			}
+			if i == retries {
+				require.NoError(t, errors.Errorf("ratio group views did not show up in time"))
+			}
+			<-time.After(time.Second)
+		}
 		require.Contains(t, views, ViewMain)
-		// ruTorrent's ratio plugin inserts its ratio groups as persistent views rat_0 to rat_7
 		require.Contains(t, views, View("rat_1"))
 	})
 
