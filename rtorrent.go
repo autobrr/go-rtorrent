@@ -102,6 +102,10 @@ func NewClientWithOpts(cfg Config, opts ...OptFunc) *Client {
 type FieldValue struct {
 	Field Field
 	Value string
+
+	// command marks Field as a complete command name that is called with
+	// Value, rather than a field whose ".set" command is called.
+	command bool
 }
 
 // Torrent represents a torrent in rTorrent
@@ -182,6 +186,8 @@ const (
 	DFinishedTime Field = "d.timestamp.finished"
 	// DStartedTime represents the date the torrent started downloading
 	DStartedTime Field = "d.timestamp.started"
+	// DPriority represents the bandwidth priority of a "Downloading Item": 0 off, 1 low, 2 normal, 3 high
+	DPriority Field = "d.priority"
 
 	// FPath represents the path of a "File Item"
 	FPath Field = "f.path"
@@ -199,7 +205,7 @@ func (f Field) Query() string {
 
 // SetValue returns a FieldValue struct which can be used to set the field on a particular item in rTorrent to the specified value
 func (f Field) SetValue(value string) *FieldValue {
-	return &FieldValue{f, value}
+	return &FieldValue{Field: f, Value: value}
 }
 
 // Cmd returns the representation of the field which allows it to be used a command with Client
@@ -207,7 +213,18 @@ func (f Field) Cmd() string {
 	return string(f)
 }
 
+// Command returns a FieldValue which calls cmd with value on a newly added torrent, for commands that have no
+// ".set" form, such as "view.set_visible" which puts the torrent in a view or ratio group:
+//
+//	AddTorrent(fileData, Command("view.set_visible", "rat_0"))
+func Command(cmd string, value string) *FieldValue {
+	return &FieldValue{Field: Field(cmd), Value: value, command: true}
+}
+
 func (f *FieldValue) String() string {
+	if f.command {
+		return fmt.Sprintf("%s=\"%s\"", f.Field, f.Value)
+	}
 	return fmt.Sprintf("%s.set=\"%s\"", f.Field, f.Value)
 }
 
@@ -227,7 +244,7 @@ func (f *File) Pretty() string {
 //
 // Adds the Torrent by URL (stopped) and sets the label on the torrent
 //
-//	AddStopped("some-url", &FieldValue{"d.custom1", "my-label"})
+//	AddStopped("some-url", &FieldValue{Field: "d.custom1", Value: "my-label"})
 //
 // Or:
 //
@@ -235,7 +252,7 @@ func (f *File) Pretty() string {
 //
 // Adds the Torrent by URL (stopped) and  sets the label and base path
 //
-//	AddStopped("some-url", &FieldValue{"d.custom1", "my-label"}, &FiedValue{"d.base_path", "/some/valid/path"})
+//	AddStopped("some-url", &FieldValue{Field: "d.custom1", Value: "my-label"}, &FieldValue{Field: "d.base_path", Value: "/some/valid/path"})
 //
 // Or:
 //
@@ -416,6 +433,32 @@ func (r *Client) UpRate(ctx context.Context) (int, error) {
 	return 0, errors.Errorf("result isn't int: %v", result)
 }
 
+// Views returns the names of all views, including persistent views used as ratio groups
+func (r *Client) Views(ctx context.Context) ([]View, error) {
+	result, err := r.xmlrpcClient.Call(ctx, "view.list")
+	if err != nil {
+		return nil, errors.Wrap(err, "view.list XMLRPC call failed")
+	}
+	if outer, ok := result.([]interface{}); ok && len(outer) == 1 {
+		if inner, ok := outer[0].([]interface{}); ok {
+			result = inner
+		}
+	}
+	names, ok := result.([]interface{})
+	if !ok {
+		return nil, errors.Errorf("result isn't list: %v", result)
+	}
+	views := make([]View, 0, len(names))
+	for _, name := range names {
+		s, ok := name.(string)
+		if !ok {
+			return nil, errors.Errorf("view name isn't string: %v", name)
+		}
+		views = append(views, View(s))
+	}
+	return views, nil
+}
+
 // GetTorrents returns all the torrents reported by this Client instance
 func (r *Client) GetTorrents(ctx context.Context, view View) ([]Torrent, error) {
 	args := []interface{}{"", string(view), DName.Query(), DSizeInBytes.Query(), DHash.Query(), DLabel.Query(), DDirectory.Query(), DIsActive.Query(), DComplete.Query(), DRatio.Query(), DCreationTime.Query(), DFinishedTime.Query(), DStartedTime.Query()}
@@ -501,7 +544,7 @@ func (r *Client) GetTorrent(ctx context.Context, hash string) (Torrent, error) {
 	if err != nil {
 		return t, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", string(DStartedTime)))
 	}
-	t.Created = time.Unix(int64(results.([]interface{})[0].(int)), 0)
+	t.Started = time.Unix(int64(results.([]interface{})[0].(int)), 0)
 
 	return t, nil
 }

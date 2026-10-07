@@ -2,639 +2,335 @@ package rtorrent
 
 import (
 	"context"
-	"log/slog"
-	"os"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/pkg/errors"
+	"github.com/autobrr/go-rtorrent/xmlrpc"
+
 	"github.com/stretchr/testify/require"
 )
 
-func TestRTorrent(t *testing.T) {
-	/*
-		These tests rely on a local instance of rtorrent to be running in a clean state.
-		Use the included `test.sh` script to run these tests.
-	*/
-	addr := os.Getenv("RTORRENT_TEST_URL")
+type call struct {
+	method string
+	params []interface{}
+}
 
-	slog.Info("RTORRENT_TEST_URL from env", slog.String("addr", addr))
+// fakeServer answers XML-RPC calls with the response registered for the method and records every call it receives.
+type fakeServer struct {
+	t         *testing.T
+	responses map[string]interface{}
+	calls     []call
+}
 
-	if addr == "" {
-		addr = "http://localhost:8000/RPC2"
+func newFakeServer(t *testing.T, responses map[string]interface{}) (*Client, *fakeServer) {
+	t.Helper()
 
-		slog.Info("RTORRENT_TEST_URL from env empty, fallback to default", slog.String("addr", addr))
+	fs := &fakeServer{t: t, responses: responses}
+	srv := httptest.NewServer(fs)
+	t.Cleanup(srv.Close)
+
+	return NewClient(Config{Addr: srv.URL}), fs
+}
+
+func (fs *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	method, params, _, err := xmlrpc.Unmarshal(r.Body)
+	if err != nil {
+		fs.t.Errorf("unmarshal request: %v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	fs.calls = append(fs.calls, call{method: method, params: params})
+
+	resp, ok := fs.responses[method]
+	if !ok {
+		resp = xmlrpc.Fault{Code: -506, Message: "method '" + method + "' not defined"}
 	}
 
-	client := NewClient(Config{Addr: addr, TLSSkipVerify: false})
-	//client := New("http://localhost:8000", false)
-	maxRetries := 60
+	w.Header().Set("Content-Type", "text/xml")
+	if err := xmlrpc.Marshal(w, "", resp); err != nil {
+		fs.t.Errorf("marshal response: %v", err)
+	}
+}
 
+func TestFieldValue_String(t *testing.T) {
+	tests := []struct {
+		name string
+		fv   *FieldValue
+		want string
+	}{
+		{name: "set value", fv: DLabel.SetValue("tv"), want: `d.custom1.set="tv"`},
+		{name: "priority", fv: DPriority.SetValue("3"), want: `d.priority.set="3"`},
+		{name: "command", fv: Command("view.set_visible", "rat_1"), want: `view.set_visible="rat_1"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.fv.String())
+		})
+	}
+}
+
+func TestField_Query(t *testing.T) {
+	require.Equal(t, "d.name=", DName.Query())
+	require.Equal(t, "d.name", DName.Cmd())
+}
+
+func TestClient_Add(t *testing.T) {
+	data := []byte("d8:announce0:e")
+
+	tests := []struct {
+		name   string
+		method string
+		add    func(c *Client, extra ...*FieldValue) error
+		target interface{}
+	}{
+		{
+			name:   "url started",
+			method: "load.start",
+			add: func(c *Client, extra ...*FieldValue) error {
+				return c.Add(context.Background(), "https://example.com/a.torrent", extra...)
+			},
+			target: []byte("https://example.com/a.torrent"),
+		},
+		{
+			name:   "url stopped",
+			method: "load.normal",
+			add: func(c *Client, extra ...*FieldValue) error {
+				return c.AddStopped(context.Background(), "https://example.com/a.torrent", extra...)
+			},
+			target: []byte("https://example.com/a.torrent"),
+		},
+		{
+			name:   "raw started",
+			method: "load.raw_start",
+			add: func(c *Client, extra ...*FieldValue) error {
+				return c.AddTorrent(context.Background(), data, extra...)
+			},
+			target: data,
+		},
+		{
+			name:   "raw stopped",
+			method: "load.raw",
+			add: func(c *Client, extra ...*FieldValue) error {
+				return c.AddTorrentStopped(context.Background(), data, extra...)
+			},
+			target: data,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, fs := newFakeServer(t, map[string]interface{}{tt.method: 0})
+
+			err := tt.add(client, DLabel.SetValue("tv"), Command("view.set_visible", "rat_1"))
+			require.NoError(t, err)
+
+			require.Len(t, fs.calls, 1)
+			require.Equal(t, tt.method, fs.calls[0].method)
+			// Extra commands must be separate params, not wrapped in an array: tinyxml2 builds of rTorrent reject that.
+			require.Equal(t, []interface{}{"", tt.target, `d.custom1.set="tv"`, `view.set_visible="rat_1"`}, fs.calls[0].params)
+		})
+	}
+}
+
+func TestClient_Add_Fault(t *testing.T) {
+	client, _ := newFakeServer(t, map[string]interface{}{
+		"load.start": xmlrpc.Fault{Code: -503, Message: "Could not create download"},
+	})
+
+	err := client.Add(context.Background(), "https://example.com/a.torrent")
+	require.ErrorContains(t, err, "load.start XMLRPC call failed")
+	require.ErrorContains(t, err, "Could not create download")
+}
+
+func TestClient_Totals(t *testing.T) {
+	client, _ := newFakeServer(t, map[string]interface{}{
+		"throttle.global_down.total": 1024,
+		"throttle.global_up.total":   512,
+		"throttle.global_down.rate":  64,
+		"throttle.global_up.rate":    32,
+	})
 	ctx := context.Background()
 
-	t.Run("get ip", func(t *testing.T) {
-		ctx := context.Background()
-		_, err := client.IP(ctx)
-		require.NoError(t, err)
-		// Don't assert anything about the response, differs based upon the environment
+	down, err := client.DownTotal(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1024, down)
+
+	up, err := client.UpTotal(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 512, up)
+
+	downRate, err := client.DownRate(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 64, downRate)
+
+	upRate, err := client.UpRate(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 32, upRate)
+}
+
+func TestClient_Views(t *testing.T) {
+	client, fs := newFakeServer(t, map[string]interface{}{
+		"view.list": []interface{}{"main", "default", "rat_0", "rat_1"},
 	})
 
-	t.Run("get name", func(t *testing.T) {
-		ctx := context.Background()
-		name, err := client.Name(ctx)
-		require.NoError(t, err)
-		require.NotEmpty(t, name)
+	views, err := client.Views(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []View{ViewMain, "default", "rat_0", "rat_1"}, views)
+	require.Equal(t, "view.list", fs.calls[0].method)
+}
+
+func TestClient_Views_NonString(t *testing.T) {
+	client, _ := newFakeServer(t, map[string]interface{}{
+		"view.list": []interface{}{"main", 1},
 	})
 
-	t.Run("down total", func(t *testing.T) {
-		total, err := client.DownTotal(ctx)
-		require.NoError(t, err)
-		require.Zero(t, total, "expected no data to be transferred yet")
+	_, err := client.Views(context.Background())
+	require.ErrorContains(t, err, "view name isn't string")
+}
+
+func TestClient_GetTorrents(t *testing.T) {
+	client, fs := newFakeServer(t, map[string]interface{}{
+		"d.multicall2": []interface{}{
+			[]interface{}{"name-1", 100, "HASH1", "tv", "/downloads/one", 1, 1, 1500, 1700000000, 1700000200, 1700000100},
+			[]interface{}{"name-2", 200, "HASH2", "", "/downloads/two", 0, 0, 0, 1700000000, 0, 0},
+		},
 	})
 
-	t.Run("up total", func(t *testing.T) {
-		total, err := client.UpTotal(ctx)
-		require.NoError(t, err)
-		require.Zero(t, total, "expected no data to be transferred yet")
+	torrents, err := client.GetTorrents(context.Background(), ViewSeeding)
+	require.NoError(t, err)
+	require.Equal(t, []Torrent{
+		{
+			Hash:      "HASH1",
+			Name:      "name-1",
+			Path:      "/downloads/one",
+			Size:      100,
+			Label:     "tv",
+			Completed: true,
+			Ratio:     1.5,
+			Created:   time.Unix(1700000000, 0),
+			Finished:  time.Unix(1700000200, 0),
+			Started:   time.Unix(1700000100, 0),
+		},
+		{
+			Hash:     "HASH2",
+			Name:     "name-2",
+			Path:     "/downloads/two",
+			Size:     200,
+			Created:  time.Unix(1700000000, 0),
+			Finished: time.Unix(0, 0),
+			Started:  time.Unix(0, 0),
+		},
+	}, torrents)
+
+	require.Equal(t, "", fs.calls[0].params[0])
+	require.Equal(t, "seeding", fs.calls[0].params[1])
+}
+
+func TestClient_GetTorrent(t *testing.T) {
+	client, _ := newFakeServer(t, map[string]interface{}{
+		"d.name":               "name-1",
+		"d.size_bytes":         100,
+		"d.custom1":            "tv",
+		"d.directory":          "/downloads/one",
+		"d.complete":           1,
+		"d.ratio":              1500,
+		"d.creation_date":      1700000000,
+		"d.timestamp.finished": 1700000200,
+		"d.timestamp.started":  1700000100,
 	})
 
-	t.Run("down rate", func(t *testing.T) {
-		rate, err := client.DownRate(ctx)
-		require.NoError(t, err)
-		require.Zero(t, rate, "expected no download yet")
+	torrent, err := client.GetTorrent(context.Background(), "HASH1")
+	require.NoError(t, err)
+	require.Equal(t, Torrent{
+		Hash:      "HASH1",
+		Name:      "name-1",
+		Path:      "/downloads/one",
+		Size:      100,
+		Label:     "tv",
+		Completed: true,
+		Ratio:     1.5,
+		Created:   time.Unix(1700000000, 0),
+		Finished:  time.Unix(1700000200, 0),
+		Started:   time.Unix(1700000100, 0),
+	}, torrent)
+}
+
+func TestClient_GetFiles(t *testing.T) {
+	client, fs := newFakeServer(t, map[string]interface{}{
+		"f.multicall": []interface{}{
+			[]interface{}{"a.mkv", 100},
+			[]interface{}{"b.nfo", 2},
+		},
 	})
 
-	t.Run("up rate", func(t *testing.T) {
-		rate, err := client.UpRate(ctx)
-		require.NoError(t, err)
-		require.Zero(t, rate, "expected no upload yet")
+	files, err := client.GetFiles(context.Background(), Torrent{Hash: "HASH1"})
+	require.NoError(t, err)
+	require.Equal(t, []File{{Path: "a.mkv", Size: 100}, {Path: "b.nfo", Size: 2}}, files)
+	require.Equal(t, []interface{}{"HASH1", 0, "f.path=", "f.size_bytes="}, fs.calls[0].params)
+}
+
+func TestClient_GetStatus(t *testing.T) {
+	client, _ := newFakeServer(t, map[string]interface{}{
+		"d.complete":        0,
+		"d.completed_bytes": 50,
+		"d.down.rate":       10,
+		"d.up.rate":         5,
+		"d.ratio":           250,
+		"d.size_bytes":      100,
 	})
 
-	t.Run("get no torrents", func(t *testing.T) {
-		torrents, err := client.GetTorrents(ctx, ViewMain)
-		require.NoError(t, err)
-		require.Empty(t, torrents, "expected no torrents to be added yet")
-	})
+	status, err := client.GetStatus(context.Background(), Torrent{Hash: "HASH1"})
+	require.NoError(t, err)
+	require.Equal(t, Status{CompletedBytes: 50, DownRate: 10, UpRate: 5, Ratio: 0.25, Size: 100}, status)
+}
 
-	t.Run("add", func(t *testing.T) {
-		t.Run("by url", func(t *testing.T) {
-			err := client.Add(ctx, "https://releases.ubuntu.com/24.10/ubuntu-24.10-desktop-amd64.iso.torrent")
+func TestClient_SetLabel(t *testing.T) {
+	client, fs := newFakeServer(t, map[string]interface{}{"d.custom1.set": "tv"})
+
+	err := client.SetLabel(context.Background(), Torrent{Hash: "HASH1"}, "tv")
+	require.NoError(t, err)
+	require.Equal(t, call{method: "d.custom1.set", params: []interface{}{"HASH1", "tv"}}, fs.calls[0])
+}
+
+func TestClient_TorrentCommands(t *testing.T) {
+	tests := []struct {
+		method string
+		run    func(c *Client, ctx context.Context, t Torrent) error
+	}{
+		{method: "d.start", run: (*Client).StartTorrent},
+		{method: "d.stop", run: (*Client).StopTorrent},
+		{method: "d.close", run: (*Client).CloseTorrent},
+		{method: "d.open", run: (*Client).OpenTorrent},
+		{method: "d.pause", run: (*Client).PauseTorrent},
+		{method: "d.resume", run: (*Client).ResumeTorrent},
+		{method: "d.erase", run: (*Client).Delete},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			client, fs := newFakeServer(t, map[string]interface{}{tt.method: 0})
+
+			err := tt.run(client, context.Background(), Torrent{Hash: "HASH1"})
 			require.NoError(t, err)
-
-			t.Run("get torrent", func(t *testing.T) {
-				// It will take some time to appear, so retry a few times
-				var torrents []Torrent
-				var err error
-				retries := maxRetries
-				for i := 0; i <= retries; i++ {
-					<-time.After(time.Second)
-					torrents, err = client.GetTorrents(ctx, ViewMain)
-					require.NoError(t, err)
-					if len(torrents) > 0 {
-						break
-					}
-					if i == retries {
-						require.NoError(t, errors.Errorf("torrent did not show up in time"))
-					}
-				}
-				require.NotEmpty(t, torrents)
-				require.Len(t, torrents, 1)
-				require.Equal(t, "3F9AAC158C7DE8DFCAB171EA58A17AABDF7FBC93", torrents[0].Hash)
-				require.Equal(t, "ubuntu-24.10-desktop-amd64.iso", torrents[0].Name)
-				require.Equal(t, "", torrents[0].Label)
-				require.Equal(t, 5665497088, torrents[0].Size)
-				require.Equal(t, "/downloads/temp", torrents[0].Path)
-				require.False(t, torrents[0].Completed)
-
-				t.Run("get files", func(t *testing.T) {
-					files, err := client.GetFiles(ctx, torrents[0])
-					require.NoError(t, err)
-					require.NotEmpty(t, files)
-					require.Len(t, files, 1)
-					for _, f := range files {
-						require.NotEmpty(t, f.Path)
-						require.NotZero(t, f.Size)
-					}
-				})
-
-				t.Run("single get", func(t *testing.T) {
-					torrent, err := client.GetTorrent(ctx, torrents[0].Hash)
-					require.NoError(t, err)
-					require.NotEmpty(t, torrent.Hash)
-					require.NotEmpty(t, torrent.Name)
-					require.NotEmpty(t, torrent.Path)
-					require.NotEmpty(t, torrent.Size)
-				})
-
-				t.Run("change label", func(t *testing.T) {
-					err := client.SetLabel(ctx, torrents[0], "TestLabel")
-					require.NoError(t, err)
-
-					// It will take some time to change, so try a few times
-					retries := maxRetries
-					for i := 0; i <= retries; i++ {
-						<-time.After(time.Second)
-						torrents, err = client.GetTorrents(ctx, ViewMain)
-						require.NoError(t, err)
-						require.Len(t, torrents, 1)
-						if torrents[0].Label != "" {
-							break
-						}
-						if i == retries {
-							require.NoError(t, errors.Errorf("torrent label did not change in time"))
-						}
-					}
-					require.Equal(t, "TestLabel", torrents[0].Label)
-				})
-
-				t.Run("get status", func(t *testing.T) {
-					var status Status
-					var err error
-					// It may take some time for the download to start
-					retries := maxRetries
-					for i := 0; i <= retries; i++ {
-						<-time.After(time.Second)
-						status, err = client.GetStatus(ctx, torrents[0])
-						require.NoError(t, err)
-						t.Logf("Status = %+v", status)
-						if status.CompletedBytes > 0 {
-							break
-						}
-						if i == retries {
-							require.NoError(t, errors.Errorf("torrent did not start in time"))
-						}
-					}
-
-					require.False(t, status.Completed)
-					require.NotZero(t, status.CompletedBytes)
-					require.NotZero(t, status.DownRate)
-					require.NotZero(t, status.Size)
-					// require.NotZero(t, status.UpRate)
-					//require.NotZero(t, status.Ratio)
-				})
-
-				t.Run("delete torrent", func(t *testing.T) {
-					err := client.Delete(ctx, torrents[0])
-					require.NoError(t, err)
-
-					torrents, err := client.GetTorrents(ctx, ViewMain)
-					require.NoError(t, err)
-					require.Empty(t, torrents)
-
-					t.Run("get torrent", func(t *testing.T) {
-						// It will take some time to disappear, so retry a few times
-						var torrents []Torrent
-						var err error
-						retries := maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-							torrents, err = client.GetTorrents(ctx, ViewMain)
-							require.NoError(t, err)
-							if len(torrents) == 0 {
-								break
-							}
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not delete in time"))
-							}
-						}
-						require.Empty(t, torrents)
-					})
-				})
-
-			})
+			require.Equal(t, call{method: tt.method, params: []interface{}{"HASH1"}}, fs.calls[0])
 		})
-
-		t.Run("by url (stopped)", func(t *testing.T) {
-			label := DLabel.SetValue("test-label")
-			err := client.AddStopped(ctx, "https://releases.ubuntu.com/24.10/ubuntu-24.10-desktop-amd64.iso.torrent", label)
-			require.NoError(t, err)
-
-			t.Run("get torrent", func(t *testing.T) {
-				// It will take some time to appear, so retry a few times
-				var torrents []Torrent
-				var err error
-				retries := maxRetries
-				for i := 0; i <= retries; i++ {
-					<-time.After(time.Second)
-					torrents, err = client.GetTorrents(ctx, ViewStopped)
-					require.NoError(t, err)
-					if len(torrents) > 0 {
-						break
-					}
-					if i == retries {
-						require.NoError(t, errors.Errorf("torrent did not show up in time"))
-					}
-				}
-				require.NotEmpty(t, torrents)
-				require.Len(t, torrents, 1)
-				require.Equal(t, "3F9AAC158C7DE8DFCAB171EA58A17AABDF7FBC93", torrents[0].Hash)
-				require.Equal(t, "ubuntu-24.10-desktop-amd64.iso", torrents[0].Name)
-				require.Equal(t, label.Value, torrents[0].Label)
-				require.Equal(t, 5665497088, torrents[0].Size)
-				require.Equal(t, "/downloads/temp", torrents[0].Path)
-				require.False(t, torrents[0].Completed)
-
-				t.Run("get status", func(t *testing.T) {
-					<-time.After(time.Second)
-					status, err := client.GetStatus(ctx, torrents[0])
-					require.NoError(t, err)
-					t.Logf("Status = %+v", status)
-
-					require.False(t, status.Completed)
-					require.Zero(t, status.CompletedBytes)
-					require.Zero(t, status.DownRate)
-					require.NotZero(t, status.Size)
-				})
-
-				t.Run("start torrent", func(t *testing.T) {
-					err = client.StartTorrent(ctx, torrents[0])
-					require.NoError(t, err)
-
-					t.Run("check if started", func(t *testing.T) {
-						var isOpen, isActive bool
-						var state, retries int = 0, maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-
-							isOpen, err = client.IsOpen(ctx, torrents[0])
-							require.NoError(t, err)
-
-							isActive, err = client.IsActive(ctx, torrents[0])
-							require.NoError(t, err)
-
-							state, err = client.State(ctx, torrents[0])
-							require.NoError(t, err)
-
-							if isOpen && isActive && state == 1 {
-								break
-							}
-
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not start in time"))
-							}
-						}
-
-						require.True(t, isOpen)
-						require.True(t, isActive)
-						require.Equal(t, 1, state)
-					})
-
-					// wait some seconds to properly start to download bytes so
-					// to allow testing for up/down total post activity
-					<-time.After(time.Second * 10)
-
-					t.Run("pause torrent", func(t *testing.T) {
-						err := client.PauseTorrent(ctx, torrents[0])
-						require.NoError(t, err)
-
-						var isOpen, isActive bool
-						var state, retries int = 0, maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-							isOpen, err = client.IsOpen(ctx, torrents[0])
-							require.NoError(t, err)
-
-							isActive, err = client.IsActive(ctx, torrents[0])
-							require.NoError(t, err)
-
-							state, err = client.State(ctx, torrents[0])
-							require.NoError(t, err)
-
-							if isOpen && !isActive && state == 1 {
-								break
-							}
-
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not pause in time"))
-							}
-						}
-						require.True(t, isOpen)
-						require.False(t, isActive)
-						require.Equal(t, 1, state)
-					})
-
-					t.Run("resume torrent", func(t *testing.T) {
-						err := client.ResumeTorrent(ctx, torrents[0])
-						require.NoError(t, err)
-						var isOpen, isActive bool
-						var state, retries int = 0, maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-							isOpen, err = client.IsOpen(ctx, torrents[0])
-							require.NoError(t, err)
-
-							isActive, err = client.IsActive(ctx, torrents[0])
-							require.NoError(t, err)
-
-							state, err = client.State(ctx, torrents[0])
-							require.NoError(t, err)
-
-							if isOpen && isActive && state == 1 {
-								break
-							}
-
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not resume in time"))
-							}
-						}
-						require.True(t, isOpen)
-						require.True(t, isActive)
-						require.Equal(t, 1, state)
-					})
-
-				})
-
-				t.Run("stop torrent", func(t *testing.T) {
-					err = client.StopTorrent(ctx, torrents[0])
-					require.NoError(t, err)
-
-					t.Run("check if stopped", func(t *testing.T) {
-						var isOpen, isActive bool
-						var state, retries int = 0, maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-
-							isOpen, err = client.IsOpen(ctx, torrents[0])
-							require.NoError(t, err)
-
-							isActive, err = client.IsActive(ctx, torrents[0])
-							require.NoError(t, err)
-
-							state, err = client.State(ctx, torrents[0])
-							require.NoError(t, err)
-
-							if isOpen && !isActive && state == 0 {
-								break
-							}
-
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not stop in time"))
-							}
-						}
-						require.True(t, isOpen)
-						require.False(t, isActive)
-						require.Equal(t, 0, state)
-					})
-				})
-
-				t.Run("close torrent", func(t *testing.T) {
-					err = client.CloseTorrent(ctx, torrents[0])
-					require.NoError(t, err)
-
-					t.Run("check if closed", func(t *testing.T) {
-						var isOpen, isActive bool
-						var state, retries int = 0, maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-
-							isOpen, err = client.IsOpen(ctx, torrents[0])
-							require.NoError(t, err)
-
-							isActive, err = client.IsActive(ctx, torrents[0])
-							require.NoError(t, err)
-
-							state, err = client.State(ctx, torrents[0])
-							require.NoError(t, err)
-
-							if !isOpen && !isActive && state == 0 {
-								break
-							}
-
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not close in time"))
-							}
-						}
-						require.False(t, isOpen)
-						require.False(t, isActive)
-						require.Equal(t, 0, state)
-					})
-				})
-
-				t.Run("open torrent", func(t *testing.T) {
-					err = client.OpenTorrent(ctx, torrents[0])
-					require.NoError(t, err)
-
-					t.Run("check if open", func(t *testing.T) {
-						var isOpen bool
-						var retries int = maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-
-							isOpen, err = client.IsOpen(ctx, torrents[0])
-							require.NoError(t, err)
-
-							if isOpen {
-								break
-							}
-
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not open in time"))
-							}
-						}
-						require.True(t, isOpen)
-					})
-				})
-
-				t.Run("re-close torrent", func(t *testing.T) {
-					err = client.CloseTorrent(ctx, torrents[0])
-					require.NoError(t, err)
-
-					t.Run("check if closed", func(t *testing.T) {
-						var isOpen, isActive bool
-						var state, retries int = 0, maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-
-							isOpen, err = client.IsOpen(ctx, torrents[0])
-							require.NoError(t, err)
-
-							isActive, err = client.IsActive(ctx, torrents[0])
-							require.NoError(t, err)
-
-							state, err = client.State(ctx, torrents[0])
-							require.NoError(t, err)
-
-							if !isOpen && !isActive && state == 0 {
-								break
-							}
-
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not close in time"))
-							}
-						}
-						require.False(t, isOpen)
-						require.False(t, isActive)
-						require.Equal(t, 0, state)
-					})
-				})
-
-				t.Run("delete torrent", func(t *testing.T) {
-					err := client.Delete(ctx, torrents[0])
-					require.NoError(t, err)
-
-					torrents, err := client.GetTorrents(ctx, ViewMain)
-					require.NoError(t, err)
-					require.Empty(t, torrents)
-
-					t.Run("get torrent", func(t *testing.T) {
-						// It will take some time to disappear, so retry a few times
-						var torrents []Torrent
-						var err error
-						retries := maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-							torrents, err = client.GetTorrents(ctx, ViewMain)
-							require.NoError(t, err)
-							if len(torrents) == 0 {
-								break
-							}
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not delete in time"))
-							}
-						}
-						require.Empty(t, torrents)
-					})
-				})
-			})
-		})
-
-		t.Run("with data", func(t *testing.T) {
-			b, err := os.ReadFile("testdata/ubuntu-24.10-desktop-amd64.iso.torrent")
-			require.NoError(t, err)
-			require.NotEmpty(t, b)
-
-			err = client.AddTorrent(ctx, b)
-			require.NoError(t, err)
-
-			t.Run("get torrent", func(t *testing.T) {
-				// It will take some time to appear, so retry a few times
-				var torrents []Torrent
-				var err error
-				retries := maxRetries
-				for i := 0; i <= retries; i++ {
-					<-time.After(time.Second)
-					torrents, err = client.GetTorrents(ctx, ViewMain)
-					require.NoError(t, err)
-					if len(torrents) > 0 {
-						break
-					}
-					if i == retries {
-						require.NoError(t, errors.Errorf("torrent did not show up in time"))
-					}
-				}
-				require.NotEmpty(t, torrents)
-				require.Len(t, torrents, 1)
-				require.Equal(t, "3F9AAC158C7DE8DFCAB171EA58A17AABDF7FBC93", torrents[0].Hash)
-				require.Equal(t, "ubuntu-24.10-desktop-amd64.iso", torrents[0].Name)
-				require.Equal(t, "", torrents[0].Label)
-				require.Equal(t, 5665497088, torrents[0].Size)
-				require.Equal(t, "/downloads/temp", torrents[0].Path)
-				require.False(t, torrents[0].Completed)
-
-				t.Run("get files", func(t *testing.T) {
-					files, err := client.GetFiles(ctx, torrents[0])
-					require.NoError(t, err)
-					require.NotEmpty(t, files)
-					require.Len(t, files, 1)
-					for _, f := range files {
-						require.NotEmpty(t, f.Path)
-						require.NotZero(t, f.Size)
-					}
-				})
-
-				t.Run("delete torrent", func(t *testing.T) {
-					err := client.Delete(ctx, torrents[0])
-					require.NoError(t, err)
-
-					torrents, err := client.GetTorrents(ctx, ViewMain)
-					require.NoError(t, err)
-					require.Empty(t, torrents)
-
-					t.Run("get torrent", func(t *testing.T) {
-						// It will take some time to disappear, so retry a few times
-						var torrents []Torrent
-						var err error
-						retries := maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-							torrents, err = client.GetTorrents(ctx, ViewMain)
-							require.NoError(t, err)
-							if len(torrents) == 0 {
-								break
-							}
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not delete in time"))
-							}
-						}
-						require.Empty(t, torrents)
-					})
-				})
-			})
-		})
-
-		t.Run("with data (stopped)", func(t *testing.T) {
-			b, err := os.ReadFile("testdata/ubuntu-24.10-desktop-amd64.iso.torrent")
-			require.NoError(t, err)
-			require.NotEmpty(t, b)
-
-			label := DLabel.SetValue("test-label")
-			err = client.AddTorrentStopped(ctx, b, label)
-			require.NoError(t, err)
-
-			t.Run("get torrent", func(t *testing.T) {
-				// It will take some time to appear, so retry a few times
-				<-time.After(time.Second)
-				torrents, err := client.GetTorrents(ctx, ViewMain)
-				require.NoError(t, err)
-
-				require.NotEmpty(t, torrents)
-				require.Len(t, torrents, 1)
-				require.Equal(t, "3F9AAC158C7DE8DFCAB171EA58A17AABDF7FBC93", torrents[0].Hash)
-				require.Equal(t, "ubuntu-24.10-desktop-amd64.iso", torrents[0].Name)
-				require.Equal(t, label.Value, torrents[0].Label)
-				require.Equal(t, 5665497088, torrents[0].Size)
-
-				t.Run("delete torrent", func(t *testing.T) {
-					err := client.Delete(ctx, torrents[0])
-					require.NoError(t, err)
-
-					torrents, err := client.GetTorrents(ctx, ViewMain)
-					require.NoError(t, err)
-					require.Empty(t, torrents)
-
-					t.Run("get torrent", func(t *testing.T) {
-						// It will take some time to disappear, so retry a few times
-						var torrents []Torrent
-						var err error
-						retries := maxRetries
-						for i := 0; i <= retries; i++ {
-							<-time.After(time.Second)
-							torrents, err = client.GetTorrents(ctx, ViewMain)
-							require.NoError(t, err)
-							if len(torrents) == 0 {
-								break
-							}
-							if i == retries {
-								require.NoError(t, errors.Errorf("torrent did not delete in time"))
-							}
-						}
-						require.Empty(t, torrents)
-					})
-				})
-			})
-		})
-	})
-
-	t.Run("down total post activity", func(t *testing.T) {
-		total, err := client.DownTotal(ctx)
-		require.NoError(t, err)
-		require.NotZero(t, total, "expected data to be transferred")
-	})
-
-	t.Run("up total post activity", func(t *testing.T) {
-		total, err := client.UpTotal(ctx)
-		require.NoError(t, err)
-		require.NotZero(t, total, "expected data to be transferred")
-	})
-
+	}
+}
+
+func TestClient_BasicAuth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "user" || pass != "pass" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = xmlrpc.Marshal(w, "", "host")
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewClient(Config{Addr: srv.URL, BasicUser: "user", BasicPass: "pass"})
+
+	name, err := client.Name(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "host", name)
 }
