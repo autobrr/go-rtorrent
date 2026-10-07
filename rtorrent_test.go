@@ -86,7 +86,7 @@ func TestRTorrent(t *testing.T) {
 
 	t.Run("add", func(t *testing.T) {
 		t.Run("by url", func(t *testing.T) {
-			err := client.Add(ctx, "https://releases.ubuntu.com/24.10/ubuntu-24.10-desktop-amd64.iso.torrent")
+			err := client.Add(ctx, "https://releases.ubuntu.com/26.04.1/ubuntu-26.04.1-desktop-amd64.iso.torrent")
 			require.NoError(t, err)
 
 			t.Run("get torrent", func(t *testing.T) {
@@ -107,10 +107,10 @@ func TestRTorrent(t *testing.T) {
 				}
 				require.NotEmpty(t, torrents)
 				require.Len(t, torrents, 1)
-				require.Equal(t, "3F9AAC158C7DE8DFCAB171EA58A17AABDF7FBC93", torrents[0].Hash)
-				require.Equal(t, "ubuntu-24.10-desktop-amd64.iso", torrents[0].Name)
+				require.Equal(t, "5B1E0D988FC7A0C9E99BD852071681A59974B39F", torrents[0].Hash)
+				require.Equal(t, "ubuntu-26.04.1-desktop-amd64.iso", torrents[0].Name)
 				require.Equal(t, "", torrents[0].Label)
-				require.Equal(t, 5665497088, torrents[0].Size)
+				require.Equal(t, 6482409472, torrents[0].Size)
 				require.Equal(t, "/downloads/temp", torrents[0].Path)
 				require.False(t, torrents[0].Completed)
 
@@ -214,7 +214,7 @@ func TestRTorrent(t *testing.T) {
 
 		t.Run("by url (stopped)", func(t *testing.T) {
 			label := DLabel.SetValue("test-label")
-			err := client.AddStopped(ctx, "https://releases.ubuntu.com/24.10/ubuntu-24.10-desktop-amd64.iso.torrent", label)
+			err := client.AddStopped(ctx, "https://releases.ubuntu.com/26.04.1/ubuntu-26.04.1-desktop-amd64.iso.torrent", label)
 			require.NoError(t, err)
 
 			t.Run("get torrent", func(t *testing.T) {
@@ -235,10 +235,10 @@ func TestRTorrent(t *testing.T) {
 				}
 				require.NotEmpty(t, torrents)
 				require.Len(t, torrents, 1)
-				require.Equal(t, "3F9AAC158C7DE8DFCAB171EA58A17AABDF7FBC93", torrents[0].Hash)
-				require.Equal(t, "ubuntu-24.10-desktop-amd64.iso", torrents[0].Name)
+				require.Equal(t, "5B1E0D988FC7A0C9E99BD852071681A59974B39F", torrents[0].Hash)
+				require.Equal(t, "ubuntu-26.04.1-desktop-amd64.iso", torrents[0].Name)
 				require.Equal(t, label.Value, torrents[0].Label)
-				require.Equal(t, 5665497088, torrents[0].Size)
+				require.Equal(t, 6482409472, torrents[0].Size)
 				require.Equal(t, "/downloads/temp", torrents[0].Path)
 				require.False(t, torrents[0].Completed)
 
@@ -507,7 +507,7 @@ func TestRTorrent(t *testing.T) {
 		})
 
 		t.Run("with data", func(t *testing.T) {
-			b, err := os.ReadFile("testdata/ubuntu-24.10-desktop-amd64.iso.torrent")
+			b, err := os.ReadFile("testdata/ubuntu-26.04.1-desktop-amd64.iso.torrent")
 			require.NoError(t, err)
 			require.NotEmpty(t, b)
 
@@ -532,10 +532,10 @@ func TestRTorrent(t *testing.T) {
 				}
 				require.NotEmpty(t, torrents)
 				require.Len(t, torrents, 1)
-				require.Equal(t, "3F9AAC158C7DE8DFCAB171EA58A17AABDF7FBC93", torrents[0].Hash)
-				require.Equal(t, "ubuntu-24.10-desktop-amd64.iso", torrents[0].Name)
+				require.Equal(t, "5B1E0D988FC7A0C9E99BD852071681A59974B39F", torrents[0].Hash)
+				require.Equal(t, "ubuntu-26.04.1-desktop-amd64.iso", torrents[0].Name)
 				require.Equal(t, "", torrents[0].Label)
-				require.Equal(t, 5665497088, torrents[0].Size)
+				require.Equal(t, 6482409472, torrents[0].Size)
 				require.Equal(t, "/downloads/temp", torrents[0].Path)
 				require.False(t, torrents[0].Completed)
 
@@ -581,7 +581,7 @@ func TestRTorrent(t *testing.T) {
 		})
 
 		t.Run("with data (stopped)", func(t *testing.T) {
-			b, err := os.ReadFile("testdata/ubuntu-24.10-desktop-amd64.iso.torrent")
+			b, err := os.ReadFile("testdata/ubuntu-26.04.1-desktop-amd64.iso.torrent")
 			require.NoError(t, err)
 			require.NotEmpty(t, b)
 
@@ -597,10 +597,10 @@ func TestRTorrent(t *testing.T) {
 
 				require.NotEmpty(t, torrents)
 				require.Len(t, torrents, 1)
-				require.Equal(t, "3F9AAC158C7DE8DFCAB171EA58A17AABDF7FBC93", torrents[0].Hash)
-				require.Equal(t, "ubuntu-24.10-desktop-amd64.iso", torrents[0].Name)
+				require.Equal(t, "5B1E0D988FC7A0C9E99BD852071681A59974B39F", torrents[0].Hash)
+				require.Equal(t, "ubuntu-26.04.1-desktop-amd64.iso", torrents[0].Name)
 				require.Equal(t, label.Value, torrents[0].Label)
-				require.Equal(t, 5665497088, torrents[0].Size)
+				require.Equal(t, 6482409472, torrents[0].Size)
 
 				t.Run("delete torrent", func(t *testing.T) {
 					err := client.Delete(ctx, torrents[0])
@@ -633,7 +633,7 @@ func TestRTorrent(t *testing.T) {
 		})
 
 		t.Run("with data (stopped) in ratio group with priority", func(t *testing.T) {
-			b, err := os.ReadFile("testdata/ubuntu-24.10-desktop-amd64.iso.torrent")
+			b, err := os.ReadFile("testdata/ubuntu-26.04.1-desktop-amd64.iso.torrent")
 			require.NoError(t, err)
 
 			err = client.AddTorrentStopped(ctx, b, Command("view.set_visible", "rat_1"), DPriority.SetValue("3"))
