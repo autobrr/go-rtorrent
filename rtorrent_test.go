@@ -3,8 +3,10 @@ package rtorrent
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -588,5 +590,26 @@ func TestClient_UnexpectedResponses(t *testing.T) {
 			require.NotPanics(t, func() { err = tt.run(client) })
 			require.ErrorContains(t, err, tt.wantErr)
 		})
+	}
+}
+
+func TestClient_Multicall_MethodNameFirst(t *testing.T) {
+	// tinyxml2 builds of rTorrent require methodName before params in each call struct
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		_ = xmlrpc.Marshal(w, "", []interface{}{})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewClient(Config{Addr: srv.URL})
+	for i := 0; i < 10; i++ {
+		_, _ = client.GetStatus(context.Background(), Torrent{Hash: "HASH1"})
+
+		structs := strings.Split(string(body), "<struct>")[1:]
+		require.Len(t, structs, 6)
+		for _, s := range structs {
+			require.True(t, strings.HasPrefix(strings.TrimSpace(s), "<member><name>methodName</name>"), "call struct starts with %.60q", s)
+		}
 	}
 }

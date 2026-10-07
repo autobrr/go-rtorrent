@@ -641,11 +641,18 @@ func (r *Client) callInt(ctx context.Context, method string, args ...interface{}
 	return i, nil
 }
 
+// multicallEntry is one call in a system.multicall request. It is a struct rather than a map so methodName is
+// always encoded before params, which tinyxml2 builds of rTorrent require.
+type multicallEntry struct {
+	MethodName string        `xml:"methodName"`
+	Params     []interface{} `xml:"params"`
+}
+
 // multicall calls the command of every field with params in a single system.multicall request.
 func (r *Client) multicall(ctx context.Context, fields []Field, params ...interface{}) (*fieldValues, error) {
 	calls := make([]interface{}, 0, len(fields))
 	for _, f := range fields {
-		calls = append(calls, map[string]interface{}{"methodName": f.Cmd(), "params": params})
+		calls = append(calls, multicallEntry{MethodName: f.Cmd(), Params: params})
 	}
 	result, err := r.xmlrpcClient.Call(ctx, "system.multicall", calls)
 	if err != nil {
