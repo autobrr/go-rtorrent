@@ -41,3 +41,19 @@ client := rtorrent.NewClient(rtorrent.Config{Addr: "http://my-rtorrent.com/RPC2"
 ## Contributing
 
 Pull requests are welcome, please ensure you add relevant tests for any new/changed functionality.
+
+### Testing
+
+Unit tests need nothing but Go:
+
+```sh
+go test ./...
+```
+
+Integration tests need Docker. They start two rTorrent containers with [Testcontainers](https://golang.testcontainers.org/), one under test and one as its peer, and transfer generated torrents between them, so they don't need internet access:
+
+```sh
+go test -tags integration ./...
+```
+
+They default to `crazymax/rtorrent-rutorrent:latest`. Set `RTORRENT_TEST_IMAGE` to test another image.

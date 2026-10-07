@@ -4,8 +4,6 @@ package rtorrent
 
 import (
 	"context"
-	"log/slog"
-	"os"
 	"testing"
 	"time"
 
@@ -14,22 +12,10 @@ import (
 )
 
 func TestRTorrent(t *testing.T) {
-	/*
-		These tests rely on a local instance of rtorrent to be running in a clean state.
-		Use the included `test.sh` script, or run `go test -tags integration ./...` against an instance.
-	*/
-	addr := os.Getenv("RTORRENT_TEST_URL")
-
-	slog.Info("RTORRENT_TEST_URL from env", slog.String("addr", addr))
-
-	if addr == "" {
-		addr = "http://localhost:8000/RPC2"
-
-		slog.Info("RTORRENT_TEST_URL from env empty, fallback to default", slog.String("addr", addr))
-	}
-
-	client := NewClient(Config{Addr: addr, TLSSkipVerify: false})
-	//client := New("http://localhost:8000", false)
+	// These tests start their own rTorrent containers with Docker, see newTestEnv.
+	env := newTestEnv(t)
+	client := env.client
+	download := env.download
 	maxRetries := 60
 
 	ctx := context.Background()
@@ -73,32 +59,12 @@ func TestRTorrent(t *testing.T) {
 	})
 
 	t.Run("views", func(t *testing.T) {
-		// ruTorrent's ratio plugin inserts its ratio groups as persistent views rat_0 to rat_7,
-		// which can happen some time after rTorrent starts, so retry until they show up
-		var views []View
-		var err error
-		retries := maxRetries
-		for i := 0; i <= retries; i++ {
-			views, err = client.Views(ctx)
-			require.NoError(t, err)
-			found := false
-			for _, v := range views {
-				if v == View("rat_1") {
-					found = true
-				}
-			}
-			if found {
-				break
-			}
-			if i == retries {
-				require.NoError(t, errors.Errorf("ratio group views did not show up in time"))
-			}
-			<-time.After(time.Second)
-		}
+		views, err := client.Views(ctx)
+		require.NoError(t, err)
 		require.Contains(t, views, ViewMain)
+		// ruTorrent's ratio plugin inserts its ratio groups as persistent views rat_0 to rat_7
 		require.Contains(t, views, View("rat_1"))
 	})
-
 	t.Run("get no torrents", func(t *testing.T) {
 		torrents, err := client.GetTorrents(ctx, ViewMain)
 		require.NoError(t, err)
@@ -107,7 +73,7 @@ func TestRTorrent(t *testing.T) {
 
 	t.Run("add", func(t *testing.T) {
 		t.Run("by url", func(t *testing.T) {
-			err := client.Add(ctx, "https://releases.ubuntu.com/26.04.1/ubuntu-26.04.1-desktop-amd64.iso.torrent")
+			err := client.Add(ctx, env.downloadURL())
 			require.NoError(t, err)
 
 			t.Run("get torrent", func(t *testing.T) {
@@ -128,10 +94,10 @@ func TestRTorrent(t *testing.T) {
 				}
 				require.NotEmpty(t, torrents)
 				require.Len(t, torrents, 1)
-				require.Equal(t, "5B1E0D988FC7A0C9E99BD852071681A59974B39F", torrents[0].Hash)
-				require.Equal(t, "ubuntu-26.04.1-desktop-amd64.iso", torrents[0].Name)
+				require.Equal(t, download.Hash, torrents[0].Hash)
+				require.Equal(t, download.Name, torrents[0].Name)
 				require.Equal(t, "", torrents[0].Label)
-				require.Equal(t, 6482409472, torrents[0].Size)
+				require.Equal(t, download.Size, torrents[0].Size)
 				require.Equal(t, "/downloads/temp", torrents[0].Path)
 				require.False(t, torrents[0].Completed)
 
@@ -235,7 +201,7 @@ func TestRTorrent(t *testing.T) {
 
 		t.Run("by url (stopped)", func(t *testing.T) {
 			label := DLabel.SetValue("test-label")
-			err := client.AddStopped(ctx, "https://releases.ubuntu.com/26.04.1/ubuntu-26.04.1-desktop-amd64.iso.torrent", label)
+			err := client.AddStopped(ctx, env.downloadURL(), label)
 			require.NoError(t, err)
 
 			t.Run("get torrent", func(t *testing.T) {
@@ -256,10 +222,10 @@ func TestRTorrent(t *testing.T) {
 				}
 				require.NotEmpty(t, torrents)
 				require.Len(t, torrents, 1)
-				require.Equal(t, "5B1E0D988FC7A0C9E99BD852071681A59974B39F", torrents[0].Hash)
-				require.Equal(t, "ubuntu-26.04.1-desktop-amd64.iso", torrents[0].Name)
+				require.Equal(t, download.Hash, torrents[0].Hash)
+				require.Equal(t, download.Name, torrents[0].Name)
 				require.Equal(t, label.Value, torrents[0].Label)
-				require.Equal(t, 6482409472, torrents[0].Size)
+				require.Equal(t, download.Size, torrents[0].Size)
 				require.Equal(t, "/downloads/temp", torrents[0].Path)
 				require.False(t, torrents[0].Completed)
 
@@ -528,11 +494,9 @@ func TestRTorrent(t *testing.T) {
 		})
 
 		t.Run("with data", func(t *testing.T) {
-			b, err := os.ReadFile("testdata/ubuntu-26.04.1-desktop-amd64.iso.torrent")
-			require.NoError(t, err)
-			require.NotEmpty(t, b)
+			b := download.Torrent
 
-			err = client.AddTorrent(ctx, b)
+			err := client.AddTorrent(ctx, b)
 			require.NoError(t, err)
 
 			t.Run("get torrent", func(t *testing.T) {
@@ -553,10 +517,10 @@ func TestRTorrent(t *testing.T) {
 				}
 				require.NotEmpty(t, torrents)
 				require.Len(t, torrents, 1)
-				require.Equal(t, "5B1E0D988FC7A0C9E99BD852071681A59974B39F", torrents[0].Hash)
-				require.Equal(t, "ubuntu-26.04.1-desktop-amd64.iso", torrents[0].Name)
+				require.Equal(t, download.Hash, torrents[0].Hash)
+				require.Equal(t, download.Name, torrents[0].Name)
 				require.Equal(t, "", torrents[0].Label)
-				require.Equal(t, 6482409472, torrents[0].Size)
+				require.Equal(t, download.Size, torrents[0].Size)
 				require.Equal(t, "/downloads/temp", torrents[0].Path)
 				require.False(t, torrents[0].Completed)
 
@@ -602,12 +566,10 @@ func TestRTorrent(t *testing.T) {
 		})
 
 		t.Run("with data (stopped)", func(t *testing.T) {
-			b, err := os.ReadFile("testdata/ubuntu-26.04.1-desktop-amd64.iso.torrent")
-			require.NoError(t, err)
-			require.NotEmpty(t, b)
+			b := download.Torrent
 
 			label := DLabel.SetValue("test-label")
-			err = client.AddTorrentStopped(ctx, b, label)
+			err := client.AddTorrentStopped(ctx, b, label)
 			require.NoError(t, err)
 
 			t.Run("get torrent", func(t *testing.T) {
@@ -618,10 +580,10 @@ func TestRTorrent(t *testing.T) {
 
 				require.NotEmpty(t, torrents)
 				require.Len(t, torrents, 1)
-				require.Equal(t, "5B1E0D988FC7A0C9E99BD852071681A59974B39F", torrents[0].Hash)
-				require.Equal(t, "ubuntu-26.04.1-desktop-amd64.iso", torrents[0].Name)
+				require.Equal(t, download.Hash, torrents[0].Hash)
+				require.Equal(t, download.Name, torrents[0].Name)
 				require.Equal(t, label.Value, torrents[0].Label)
-				require.Equal(t, 6482409472, torrents[0].Size)
+				require.Equal(t, download.Size, torrents[0].Size)
 
 				t.Run("delete torrent", func(t *testing.T) {
 					err := client.Delete(ctx, torrents[0])
@@ -654,10 +616,9 @@ func TestRTorrent(t *testing.T) {
 		})
 
 		t.Run("with data (stopped) in ratio group with priority", func(t *testing.T) {
-			b, err := os.ReadFile("testdata/ubuntu-26.04.1-desktop-amd64.iso.torrent")
-			require.NoError(t, err)
+			b := download.Torrent
 
-			err = client.AddTorrentStopped(ctx, b, Command("view.set_visible", "rat_1"), DPriority.SetValue("3"))
+			err := client.AddTorrentStopped(ctx, b, Command("view.set_visible", "rat_1"), DPriority.SetValue("3"))
 			require.NoError(t, err)
 
 			var torrents []Torrent
@@ -683,6 +644,41 @@ func TestRTorrent(t *testing.T) {
 			require.Equal(t, []interface{}{3}, priority)
 
 			err = client.Delete(ctx, torrents[0])
+			require.NoError(t, err)
+		})
+
+		t.Run("with data in directory and seed", func(t *testing.T) {
+			upload := env.upload
+
+			// seed copies the data into the container and adds the torrent with
+			// Command("d.directory.set", ...) pointing at it
+			env.seed(t, env.main, client, upload)
+
+			torrent, err := client.GetTorrent(ctx, upload.Hash)
+			require.NoError(t, err)
+			require.Equal(t, upload.Name, torrent.Name)
+			require.Equal(t, completeDir, torrent.Path)
+			require.True(t, torrent.Completed)
+
+			err = env.peer.AddTorrent(ctx, upload.Torrent)
+			require.NoError(t, err)
+
+			var total int
+			for i := 0; i <= maxRetries; i++ {
+				<-time.After(time.Second)
+				total, err = client.UpTotal(ctx)
+				require.NoError(t, err)
+				if total >= upload.Size {
+					break
+				}
+				if i == maxRetries {
+					require.NoError(t, errors.Errorf("peer did not download the seeded torrent in time, uploaded %d bytes", total))
+				}
+			}
+
+			err = env.peer.Delete(ctx, Torrent{Hash: upload.Hash})
+			require.NoError(t, err)
+			err = client.Delete(ctx, torrent)
 			require.NoError(t, err)
 		})
 	})
