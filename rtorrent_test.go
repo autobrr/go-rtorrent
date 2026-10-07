@@ -43,15 +43,28 @@ func (fs *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	fs.calls = append(fs.calls, call{method: method, params: params})
 
-	resp, ok := fs.responses[method]
-	if !ok {
-		resp = xmlrpc.Fault{Code: -506, Message: "method '" + method + "' not defined"}
+	resp := fs.response(method)
+
+	var args []interface{}
+	if _, ok := resp.(noParams); !ok {
+		args = append(args, resp)
 	}
 
 	w.Header().Set("Content-Type", "text/xml")
-	if err := xmlrpc.Marshal(w, "", resp); err != nil {
+	if err := xmlrpc.Marshal(w, "", args...); err != nil {
 		fs.t.Errorf("marshal response: %v", err)
 	}
+}
+
+// noParams makes the fake server answer with a response that has no params at all.
+type noParams struct{}
+
+func (fs *fakeServer) response(method string) interface{} {
+	resp, ok := fs.responses[method]
+	if !ok {
+		return xmlrpc.Fault{Code: -506, Message: "method '" + method + "' not defined"}
+	}
+	return resp
 }
 
 func TestFieldValue_String(t *testing.T) {
@@ -376,6 +389,59 @@ func TestClient_WithHTTPClient_BasicAuth(t *testing.T) {
 			name, err := client.Name(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, "host", name)
+		})
+	}
+}
+
+func TestClient_UnexpectedResponses(t *testing.T) {
+	ctx := context.Background()
+	torrent := Torrent{Hash: "HASH1"}
+
+	ip := func(c *Client) error { _, err := c.IP(ctx); return err }
+	name := func(c *Client) error { _, err := c.Name(ctx); return err }
+	downTotal := func(c *Client) error { _, err := c.DownTotal(ctx); return err }
+	downRate := func(c *Client) error { _, err := c.DownRate(ctx); return err }
+	upTotal := func(c *Client) error { _, err := c.UpTotal(ctx); return err }
+	upRate := func(c *Client) error { _, err := c.UpRate(ctx); return err }
+	isActive := func(c *Client) error { _, err := c.IsActive(ctx, torrent); return err }
+	isOpen := func(c *Client) error { _, err := c.IsOpen(ctx, torrent); return err }
+	state := func(c *Client) error { _, err := c.State(ctx, torrent); return err }
+	getTorrents := func(c *Client) error { _, err := c.GetTorrents(ctx, ViewMain); return err }
+	getFiles := func(c *Client) error { _, err := c.GetFiles(ctx, torrent); return err }
+
+	tests := []struct {
+		name      string
+		responses map[string]interface{}
+		run       func(c *Client) error
+		wantErr   string
+	}{
+		{name: "IP empty", responses: map[string]interface{}{"network.bind_address": noParams{}}, run: ip, wantErr: "network.bind_address"},
+		{name: "IP wrong type", responses: map[string]interface{}{"network.bind_address": 1}, run: ip, wantErr: "isn't string"},
+		{name: "Name empty", responses: map[string]interface{}{"system.hostname": noParams{}}, run: name, wantErr: "system.hostname"},
+		{name: "DownTotal empty", responses: map[string]interface{}{"throttle.global_down.total": noParams{}}, run: downTotal, wantErr: "throttle.global_down.total"},
+		{name: "DownTotal wrong type", responses: map[string]interface{}{"throttle.global_down.total": "1"}, run: downTotal, wantErr: "isn't int"},
+		{name: "DownRate empty", responses: map[string]interface{}{"throttle.global_down.rate": noParams{}}, run: downRate, wantErr: "throttle.global_down.rate"},
+		{name: "UpTotal empty", responses: map[string]interface{}{"throttle.global_up.total": noParams{}}, run: upTotal, wantErr: "throttle.global_up.total"},
+		{name: "UpRate empty", responses: map[string]interface{}{"throttle.global_up.rate": noParams{}}, run: upRate, wantErr: "throttle.global_up.rate"},
+		{name: "IsActive empty", responses: map[string]interface{}{"d.is_active": noParams{}}, run: isActive, wantErr: "d.is_active"},
+		{name: "IsActive wrong type", responses: map[string]interface{}{"d.is_active": "yes"}, run: isActive, wantErr: "isn't int"},
+		{name: "IsOpen empty", responses: map[string]interface{}{"d.is_open": noParams{}}, run: isOpen, wantErr: "d.is_open"},
+		{name: "State wrong type", responses: map[string]interface{}{"d.state": []interface{}{1}}, run: state, wantErr: "isn't int"},
+		{name: "GetTorrents empty", responses: map[string]interface{}{"d.multicall2": noParams{}}, run: getTorrents, wantErr: "d.multicall2"},
+		{name: "GetTorrents row isn't list", responses: map[string]interface{}{"d.multicall2": []interface{}{"name-1"}}, run: getTorrents, wantErr: "isn't list"},
+		{name: "GetTorrents short row", responses: map[string]interface{}{"d.multicall2": []interface{}{[]interface{}{"name-1", 100}}}, run: getTorrents, wantErr: "d.hash"},
+		{name: "GetTorrents wrong type", responses: map[string]interface{}{"d.multicall2": []interface{}{[]interface{}{"name-1", "100", "HASH1", "", "/", 0, 0, 0, 0, 0, 0}}}, run: getTorrents, wantErr: "d.size_bytes"},
+		{name: "GetFiles empty", responses: map[string]interface{}{"f.multicall": noParams{}}, run: getFiles, wantErr: "f.multicall"},
+		{name: "GetFiles short row", responses: map[string]interface{}{"f.multicall": []interface{}{[]interface{}{"a.mkv"}}}, run: getFiles, wantErr: "f.size_bytes"},
+		{name: "GetFiles wrong type", responses: map[string]interface{}{"f.multicall": []interface{}{[]interface{}{1, 100}}}, run: getFiles, wantErr: "f.path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, _ := newFakeServer(t, tt.responses)
+
+			var err error
+			require.NotPanics(t, func() { err = tt.run(client) })
+			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 }

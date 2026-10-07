@@ -332,92 +332,32 @@ func (r *Client) add(ctx context.Context, cmd string, data []byte, extraArgs ...
 
 // IP returns the IP reported by this Client instance
 func (r *Client) IP(ctx context.Context) (string, error) {
-	result, err := r.xmlrpcClient.Call(ctx, "network.bind_address")
-	if err != nil {
-		return "", errors.Wrap(err, "network.bind_address XMLRPC call failed")
-	}
-	if ips, ok := result.([]interface{}); ok {
-		result = ips[0]
-	}
-	if ip, ok := result.(string); ok {
-		return ip, nil
-	}
-	return "", errors.Errorf("result isn't string: %v", result)
+	return r.callString(ctx, "network.bind_address")
 }
 
 // Name returns the name reported by this Client instance
 func (r *Client) Name(ctx context.Context) (string, error) {
-	result, err := r.xmlrpcClient.Call(ctx, "system.hostname")
-	if err != nil {
-		return "", errors.Wrap(err, "system.hostname XMLRPC call failed")
-	}
-	if names, ok := result.([]interface{}); ok {
-		result = names[0]
-	}
-	if name, ok := result.(string); ok {
-		return name, nil
-	}
-	return "", errors.Errorf("result isn't string: %v", result)
+	return r.callString(ctx, "system.hostname")
 }
 
 // DownTotal returns the total downloaded metric reported by this Client instance (bytes)
 func (r *Client) DownTotal(ctx context.Context) (int, error) {
-	result, err := r.xmlrpcClient.Call(ctx, "throttle.global_down.total")
-	if err != nil {
-		return 0, errors.Wrap(err, "throttle.global_down.total XMLRPC call failed")
-	}
-	if totals, ok := result.([]interface{}); ok {
-		result = totals[0]
-	}
-	if total, ok := result.(int); ok {
-		return total, nil
-	}
-	return 0, errors.Errorf("result isn't int: %v", result)
+	return r.callInt(ctx, "throttle.global_down.total")
 }
 
 // DownRate returns the current download rate reported by this Client instance (bytes/s)
 func (r *Client) DownRate(ctx context.Context) (int, error) {
-	result, err := r.xmlrpcClient.Call(ctx, "throttle.global_down.rate")
-	if err != nil {
-		return 0, errors.Wrap(err, "throttle.global_down.rate XMLRPC call failed")
-	}
-	if totals, ok := result.([]interface{}); ok {
-		result = totals[0]
-	}
-	if total, ok := result.(int); ok {
-		return total, nil
-	}
-	return 0, errors.Errorf("result isn't int: %v", result)
+	return r.callInt(ctx, "throttle.global_down.rate")
 }
 
 // UpTotal returns the total uploaded metric reported by this Client instance (bytes)
 func (r *Client) UpTotal(ctx context.Context) (int, error) {
-	result, err := r.xmlrpcClient.Call(ctx, "throttle.global_up.total")
-	if err != nil {
-		return 0, errors.Wrap(err, "throttle.global_up.total XMLRPC call failed")
-	}
-	if totals, ok := result.([]interface{}); ok {
-		result = totals[0]
-	}
-	if total, ok := result.(int); ok {
-		return total, nil
-	}
-	return 0, errors.Errorf("result isn't int: %v", result)
+	return r.callInt(ctx, "throttle.global_up.total")
 }
 
 // UpRate returns the current upload rate reported by this Client instance (bytes/s)
 func (r *Client) UpRate(ctx context.Context) (int, error) {
-	result, err := r.xmlrpcClient.Call(ctx, "throttle.global_up.rate")
-	if err != nil {
-		return 0, errors.Wrap(err, "throttle.global_up.rate XMLRPC call failed")
-	}
-	if totals, ok := result.([]interface{}); ok {
-		result = totals[0]
-	}
-	if total, ok := result.(int); ok {
-		return total, nil
-	}
-	return 0, errors.Errorf("result isn't int: %v", result)
+	return r.callInt(ctx, "throttle.global_up.rate")
 }
 
 // Views returns the names of all views, including persistent views used as ratio groups
@@ -448,28 +388,42 @@ func (r *Client) Views(ctx context.Context) ([]View, error) {
 
 // GetTorrents returns all the torrents reported by this Client instance
 func (r *Client) GetTorrents(ctx context.Context, view View) ([]Torrent, error) {
-	args := []interface{}{"", string(view), DName.Query(), DSizeInBytes.Query(), DHash.Query(), DLabel.Query(), DDirectory.Query(), DIsActive.Query(), DComplete.Query(), DRatio.Query(), DCreationTime.Query(), DFinishedTime.Query(), DStartedTime.Query()}
-	results, err := r.xmlrpcClient.Call(ctx, "d.multicall2", args...)
-	var torrents []Torrent
-	if err != nil {
-		return torrents, errors.Wrap(err, "d.multicall2 XMLRPC call failed")
+	fields := []Field{DName, DSizeInBytes, DHash, DLabel, DDirectory, DIsActive, DComplete, DRatio, DCreationTime, DFinishedTime, DStartedTime}
+	args := []interface{}{"", string(view)}
+	for _, f := range fields {
+		args = append(args, f.Query())
 	}
-	for _, outerResult := range results.([]interface{}) {
-		for _, innerResult := range outerResult.([]interface{}) {
-			torrentData := innerResult.([]interface{})
-			torrents = append(torrents, Torrent{
-				Hash:      torrentData[2].(string),
-				Name:      torrentData[0].(string),
-				Path:      torrentData[4].(string),
-				Size:      torrentData[1].(int),
-				Label:     torrentData[3].(string),
-				Completed: torrentData[6].(int) > 0,
-				Ratio:     float64(torrentData[7].(int)) / float64(1000),
-				Created:   time.Unix(int64(torrentData[8].(int)), 0),
-				Finished:  time.Unix(int64(torrentData[9].(int)), 0),
-				Started:   time.Unix(int64(torrentData[10].(int)), 0),
-			})
+	results, err := r.xmlrpcClient.Call(ctx, "d.multicall2", args...)
+	if err != nil {
+		return nil, errors.Wrap(err, "d.multicall2 XMLRPC call failed")
+	}
+	rows, err := singleList(results)
+	if err != nil {
+		return nil, errors.Wrap(err, "d.multicall2 XMLRPC call failed")
+	}
+	var torrents []Torrent
+	for _, row := range rows {
+		values, err := toList(row)
+		if err != nil {
+			return nil, errors.Wrap(err, "d.multicall2 XMLRPC call failed")
 		}
+		fv := &fieldValues{fields: fields, values: values}
+		t := Torrent{
+			Hash:      fv.stringValue(DHash),
+			Name:      fv.stringValue(DName),
+			Path:      fv.stringValue(DDirectory),
+			Size:      fv.intValue(DSizeInBytes),
+			Label:     fv.stringValue(DLabel),
+			Completed: fv.intValue(DComplete) > 0,
+			Ratio:     float64(fv.intValue(DRatio)) / float64(1000),
+			Created:   fv.timeValue(DCreationTime),
+			Finished:  fv.timeValue(DFinishedTime),
+			Started:   fv.timeValue(DStartedTime),
+		}
+		if fv.err != nil {
+			return nil, errors.Wrap(fv.err, "d.multicall2 XMLRPC call failed")
+		}
+		torrents = append(torrents, t)
 	}
 	return torrents, nil
 }
@@ -547,20 +501,34 @@ func (r *Client) Delete(ctx context.Context, t Torrent) error {
 
 // GetFiles returns all the files for a given `Torrent`
 func (r *Client) GetFiles(ctx context.Context, t Torrent) ([]File, error) {
-	args := []interface{}{t.Hash, 0, FPath.Query(), FSizeInBytes.Query()}
-	results, err := r.xmlrpcClient.Call(ctx, "f.multicall", args...)
-	var files []File
-	if err != nil {
-		return files, errors.Wrap(err, "f.multicall XMLRPC call failed")
+	fields := []Field{FPath, FSizeInBytes}
+	args := []interface{}{t.Hash, 0}
+	for _, f := range fields {
+		args = append(args, f.Query())
 	}
-	for _, outerResult := range results.([]interface{}) {
-		for _, innerResult := range outerResult.([]interface{}) {
-			fileData := innerResult.([]interface{})
-			files = append(files, File{
-				Path: fileData[0].(string),
-				Size: fileData[1].(int),
-			})
+	results, err := r.xmlrpcClient.Call(ctx, "f.multicall", args...)
+	if err != nil {
+		return nil, errors.Wrap(err, "f.multicall XMLRPC call failed")
+	}
+	rows, err := singleList(results)
+	if err != nil {
+		return nil, errors.Wrap(err, "f.multicall XMLRPC call failed")
+	}
+	var files []File
+	for _, row := range rows {
+		values, err := toList(row)
+		if err != nil {
+			return nil, errors.Wrap(err, "f.multicall XMLRPC call failed")
 		}
+		fv := &fieldValues{fields: fields, values: values}
+		f := File{
+			Path: fv.stringValue(FPath),
+			Size: fv.intValue(FSizeInBytes),
+		}
+		if fv.err != nil {
+			return nil, errors.Wrap(fv.err, "f.multicall XMLRPC call failed")
+		}
+		files = append(files, f)
 	}
 	return files, nil
 }
@@ -673,30 +641,162 @@ func (r *Client) ResumeTorrent(ctx context.Context, t Torrent) error {
 
 // IsActive checks if the torrent is active
 func (r *Client) IsActive(ctx context.Context, t Torrent) (bool, error) {
-	results, err := r.xmlrpcClient.Call(ctx, "d.is_active", t.Hash)
+	active, err := r.callInt(ctx, "d.is_active", t.Hash)
 	if err != nil {
-		return false, errors.Wrap(err, "d.is_active XMLRPC call failed")
+		return false, err
 	}
 	// active = 1; inactive = 0
-	return results.([]interface{})[0].(int) == 1, nil
+	return active == 1, nil
 }
 
 // IsOpen checks if the torrent is open
 func (r *Client) IsOpen(ctx context.Context, t Torrent) (bool, error) {
-	results, err := r.xmlrpcClient.Call(ctx, "d.is_open", t.Hash)
+	open, err := r.callInt(ctx, "d.is_open", t.Hash)
 	if err != nil {
-		return false, errors.Wrap(err, "d.is_open XMLRPC call failed")
+		return false, err
 	}
 	// open = 1; closed = 0
-	return results.([]interface{})[0].(int) == 1, nil
+	return open == 1, nil
 }
 
 // State returns the state that the torrent is into
 // It returns: 0 for stopped, 1 for started/paused
 func (r *Client) State(ctx context.Context, t Torrent) (int, error) {
-	results, err := r.xmlrpcClient.Call(ctx, "d.state", t.Hash)
-	if err != nil {
-		return 0, errors.Wrap(err, "d.state XMLRPC call failed")
+	return r.callInt(ctx, "d.state", t.Hash)
+}
+
+// callSingle calls method and returns the single value of its response.
+func (r *Client) callSingle(ctx context.Context, method string, args ...interface{}) (interface{}, error) {
+	result, err := r.xmlrpcClient.Call(ctx, method, args...)
+	if err == nil {
+		result, err = single(result)
 	}
-	return results.([]interface{})[0].(int), nil
+	if err != nil {
+		return nil, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", method))
+	}
+	return result, nil
+}
+
+// callString calls method and returns its single string value.
+func (r *Client) callString(ctx context.Context, method string, args ...interface{}) (string, error) {
+	v, err := r.callSingle(ctx, method, args...)
+	if err != nil {
+		return "", err
+	}
+	s, err := toString(v)
+	if err != nil {
+		return "", errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", method))
+	}
+	return s, nil
+}
+
+// callInt calls method and returns its single int value.
+func (r *Client) callInt(ctx context.Context, method string, args ...interface{}) (int, error) {
+	v, err := r.callSingle(ctx, method, args...)
+	if err != nil {
+		return 0, err
+	}
+	i, err := toInt(v)
+	if err != nil {
+		return 0, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", method))
+	}
+	return i, nil
+}
+
+// single returns the only value of a response, rTorrent returns every result as a list of params.
+func single(result interface{}) (interface{}, error) {
+	values, err := toList(result)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != 1 {
+		return nil, errors.Errorf("result has %d values, want 1: %v", len(values), values)
+	}
+	return values[0], nil
+}
+
+// singleList returns the only value of a response as a list.
+func singleList(result interface{}) ([]interface{}, error) {
+	v, err := single(result)
+	if err != nil {
+		return nil, err
+	}
+	return toList(v)
+}
+
+func toList(v interface{}) ([]interface{}, error) {
+	list, ok := v.([]interface{})
+	if !ok {
+		return nil, errors.Errorf("result isn't list: %v", v)
+	}
+	return list, nil
+}
+
+func toString(v interface{}) (string, error) {
+	s, ok := v.(string)
+	if !ok {
+		return "", errors.Errorf("result isn't string: %v", v)
+	}
+	return s, nil
+}
+
+func toInt(v interface{}) (int, error) {
+	i, ok := v.(int)
+	if !ok {
+		return 0, errors.Errorf("result isn't int: %v", v)
+	}
+	return i, nil
+}
+
+// fieldValues reads the values rTorrent returned for fields, in the same order, and keeps the first error.
+type fieldValues struct {
+	fields []Field
+	values []interface{}
+	err    error
+}
+
+func (fv *fieldValues) value(f Field) (interface{}, bool) {
+	if fv.err != nil {
+		return nil, false
+	}
+	for i, field := range fv.fields {
+		if field != f {
+			continue
+		}
+		if i >= len(fv.values) {
+			fv.err = errors.Errorf("%s: missing value", f)
+			return nil, false
+		}
+		return fv.values[i], true
+	}
+	fv.err = errors.Errorf("%s: not requested", f)
+	return nil, false
+}
+
+func (fv *fieldValues) stringValue(f Field) string {
+	v, ok := fv.value(f)
+	if !ok {
+		return ""
+	}
+	s, err := toString(v)
+	if err != nil {
+		fv.err = errors.Wrap(err, string(f))
+	}
+	return s
+}
+
+func (fv *fieldValues) intValue(f Field) int {
+	v, ok := fv.value(f)
+	if !ok {
+		return 0
+	}
+	i, err := toInt(v)
+	if err != nil {
+		fv.err = errors.Wrap(err, string(f))
+	}
+	return i
+}
+
+func (fv *fieldValues) timeValue(f Field) time.Time {
+	return time.Unix(int64(fv.intValue(f)), 0)
 }
