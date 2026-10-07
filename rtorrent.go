@@ -430,63 +430,23 @@ func (r *Client) GetTorrents(ctx context.Context, view View) ([]Torrent, error) 
 
 // GetTorrent returns the torrent identified by the given hash
 func (r *Client) GetTorrent(ctx context.Context, hash string) (Torrent, error) {
-	var t Torrent
-	t.Hash = hash
-	// Name
-	results, err := r.xmlrpcClient.Call(ctx, "d.name", t.Hash)
+	t := Torrent{Hash: hash}
+	fv, err := r.multicall(ctx, []Field{DName, DSizeInBytes, DLabel, DDirectory, DComplete, DRatio, DCreationTime, DFinishedTime, DStartedTime}, hash)
 	if err != nil {
-		return t, errors.Wrap(err, "d.name XMLRPC call failed")
+		return t, err
 	}
-	t.Name = results.([]interface{})[0].(string)
-	// Size
-	results, err = r.xmlrpcClient.Call(ctx, "d.size_bytes", t.Hash)
-	if err != nil {
-		return t, errors.Wrap(err, "d.size_bytes XMLRPC call failed")
+	t.Name = fv.stringValue(DName)
+	t.Size = fv.intValue(DSizeInBytes)
+	t.Label = fv.stringValue(DLabel)
+	t.Path = fv.stringValue(DDirectory)
+	t.Completed = fv.intValue(DComplete) > 0
+	t.Ratio = float64(fv.intValue(DRatio)) / float64(1000)
+	t.Created = fv.timeValue(DCreationTime)
+	t.Finished = fv.timeValue(DFinishedTime)
+	t.Started = fv.timeValue(DStartedTime)
+	if fv.err != nil {
+		return Torrent{Hash: hash}, errors.Wrap(fv.err, "system.multicall XMLRPC call failed")
 	}
-	t.Size = results.([]interface{})[0].(int)
-	// Label
-	results, err = r.xmlrpcClient.Call(ctx, "d.custom1", t.Hash)
-	if err != nil {
-		return t, errors.Wrap(err, "d.custom1 XMLRPC call failed")
-	}
-	t.Label = results.([]interface{})[0].(string)
-	// Path
-	results, err = r.xmlrpcClient.Call(ctx, "d.directory", t.Hash)
-	if err != nil {
-		return t, errors.Wrap(err, "d.directory XMLRPC call failed")
-	}
-	t.Path = results.([]interface{})[0].(string)
-	// Completed
-	results, err = r.xmlrpcClient.Call(ctx, "d.complete", t.Hash)
-	if err != nil {
-		return t, errors.Wrap(err, "d.complete XMLRPC call failed")
-	}
-	t.Completed = results.([]interface{})[0].(int) > 0
-	// Ratio
-	results, err = r.xmlrpcClient.Call(ctx, "d.ratio", t.Hash)
-	if err != nil {
-		return t, errors.Wrap(err, "d.ratio XMLRPC call failed")
-	}
-	t.Ratio = float64(results.([]interface{})[0].(int)) / float64(1000)
-	// Created
-	results, err = r.xmlrpcClient.Call(ctx, string(DCreationTime), t.Hash)
-	if err != nil {
-		return t, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", string(DCreationTime)))
-	}
-	t.Created = time.Unix(int64(results.([]interface{})[0].(int)), 0)
-	// Finished
-	results, err = r.xmlrpcClient.Call(ctx, string(DFinishedTime), t.Hash)
-	if err != nil {
-		return t, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", string(DFinishedTime)))
-	}
-	t.Finished = time.Unix(int64(results.([]interface{})[0].(int)), 0)
-	// Started
-	results, err = r.xmlrpcClient.Call(ctx, string(DStartedTime), t.Hash)
-	if err != nil {
-		return t, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", string(DStartedTime)))
-	}
-	t.Started = time.Unix(int64(results.([]interface{})[0].(int)), 0)
-
 	return t, nil
 }
 
@@ -545,43 +505,21 @@ func (r *Client) SetLabel(ctx context.Context, t Torrent, newLabel string) error
 
 // GetStatus returns the Status for a given Torrent
 func (r *Client) GetStatus(ctx context.Context, t Torrent) (Status, error) {
-	var s Status
-	// Completed
-	results, err := r.xmlrpcClient.Call(ctx, "d.complete", t.Hash)
+	fv, err := r.multicall(ctx, []Field{DComplete, DCompletedBytes, DDownRate, DUpRate, DRatio, DSizeInBytes}, t.Hash)
 	if err != nil {
-		return s, errors.Wrap(err, "d.complete XMLRPC call failed")
+		return Status{}, err
 	}
-	s.Completed = results.([]interface{})[0].(int) > 0
-	// CompletedBytes
-	results, err = r.xmlrpcClient.Call(ctx, "d.completed_bytes", t.Hash)
-	if err != nil {
-		return s, errors.Wrap(err, "d.completed_bytes XMLRPC call failed")
+	s := Status{
+		Completed:      fv.intValue(DComplete) > 0,
+		CompletedBytes: fv.intValue(DCompletedBytes),
+		DownRate:       fv.intValue(DDownRate),
+		UpRate:         fv.intValue(DUpRate),
+		Ratio:          float64(fv.intValue(DRatio)) / float64(1000),
+		Size:           fv.intValue(DSizeInBytes),
 	}
-	s.CompletedBytes = results.([]interface{})[0].(int)
-	// DownRate
-	results, err = r.xmlrpcClient.Call(ctx, "d.down.rate", t.Hash)
-	if err != nil {
-		return s, errors.Wrap(err, "d.down.rate XMLRPC call failed")
+	if fv.err != nil {
+		return Status{}, errors.Wrap(fv.err, "system.multicall XMLRPC call failed")
 	}
-	s.DownRate = results.([]interface{})[0].(int)
-	// UpRate
-	results, err = r.xmlrpcClient.Call(ctx, "d.up.rate", t.Hash)
-	if err != nil {
-		return s, errors.Wrap(err, "d.up.rate XMLRPC call failed")
-	}
-	s.UpRate = results.([]interface{})[0].(int)
-	// Ratio
-	results, err = r.xmlrpcClient.Call(ctx, "d.ratio", t.Hash)
-	if err != nil {
-		return s, errors.Wrap(err, "d.ratio XMLRPC call failed")
-	}
-	s.Ratio = float64(results.([]interface{})[0].(int)) / float64(1000)
-	// Size
-	results, err = r.xmlrpcClient.Call(ctx, "d.size_bytes", t.Hash)
-	if err != nil {
-		return s, errors.Wrap(err, "d.size_bytes XMLRPC call failed")
-	}
-	s.Size = results.([]interface{})[0].(int)
 	return s, nil
 }
 
@@ -701,6 +639,40 @@ func (r *Client) callInt(ctx context.Context, method string, args ...interface{}
 		return 0, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", method))
 	}
 	return i, nil
+}
+
+// multicall calls the command of every field with params in a single system.multicall request.
+func (r *Client) multicall(ctx context.Context, fields []Field, params ...interface{}) (*fieldValues, error) {
+	calls := make([]interface{}, 0, len(fields))
+	for _, f := range fields {
+		calls = append(calls, map[string]interface{}{"methodName": f.Cmd(), "params": params})
+	}
+	result, err := r.xmlrpcClient.Call(ctx, "system.multicall", calls)
+	if err != nil {
+		return nil, errors.Wrap(err, "system.multicall XMLRPC call failed")
+	}
+	results, err := singleList(result)
+	if err != nil {
+		return nil, errors.Wrap(err, "system.multicall XMLRPC call failed")
+	}
+	if len(results) != len(fields) {
+		return nil, errors.Errorf("system.multicall XMLRPC call failed: got %d results for %d calls", len(results), len(fields))
+	}
+
+	values := make([]interface{}, len(fields))
+	for i, entry := range results {
+		if fault, ok := entry.(map[string]interface{}); ok {
+			code, _ := fault["faultCode"].(int)
+			msg, _ := fault["faultString"].(string)
+			return nil, errors.Wrap(xmlrpc.Fault{Code: code, Message: msg}, fmt.Sprintf("%s XMLRPC call failed", fields[i]))
+		}
+		v, err := single(entry)
+		if err != nil {
+			return nil, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", fields[i]))
+		}
+		values[i] = v
+	}
+	return &fieldValues{fields: fields, values: values}, nil
 }
 
 // single returns the only value of a response, rTorrent returns every result as a list of params.

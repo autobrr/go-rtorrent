@@ -43,7 +43,12 @@ func (fs *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	fs.calls = append(fs.calls, call{method: method, params: params})
 
-	resp := fs.response(method)
+	var resp interface{}
+	if method == "system.multicall" {
+		resp = fs.multicall(params)
+	} else {
+		resp = fs.response(method)
+	}
 
 	var args []interface{}
 	if _, ok := resp.(noParams); !ok {
@@ -65,6 +70,39 @@ func (fs *fakeServer) response(method string) interface{} {
 		return xmlrpc.Fault{Code: -506, Message: "method '" + method + "' not defined"}
 	}
 	return resp
+}
+
+// multicall answers every call of a system.multicall request from the responses, the way rTorrent does: a
+// one-element array per successful call and a fault struct per failed one.
+func (fs *fakeServer) multicall(params []interface{}) interface{} {
+	if resp, ok := fs.responses["system.multicall"]; ok {
+		return resp
+	}
+	if len(params) != 1 {
+		fs.t.Errorf("system.multicall: want 1 param, got %d", len(params))
+		return xmlrpc.Fault{Code: -501, Message: "invalid parameters"}
+	}
+	calls, ok := params[0].([]interface{})
+	if !ok {
+		fs.t.Errorf("system.multicall: param isn't array: %v", params[0])
+		return xmlrpc.Fault{Code: -501, Message: "invalid parameters"}
+	}
+
+	results := make([]interface{}, 0, len(calls))
+	for _, c := range calls {
+		m, _ := c.(map[string]interface{})
+		method, _ := m["methodName"].(string)
+
+		switch resp := fs.response(method).(type) {
+		case xmlrpc.Fault:
+			results = append(results, map[string]interface{}{"faultCode": resp.Code, "faultString": resp.Message})
+		case noParams:
+			results = append(results, []interface{}{})
+		default:
+			results = append(results, []interface{}{resp})
+		}
+	}
+	return results
 }
 
 func TestFieldValue_String(t *testing.T) {
@@ -393,9 +431,88 @@ func TestClient_WithHTTPClient_BasicAuth(t *testing.T) {
 	}
 }
 
+func TestClient_GetTorrent_Multicall(t *testing.T) {
+	client, fs := newFakeServer(t, map[string]interface{}{
+		"d.name":               "name-1",
+		"d.size_bytes":         100,
+		"d.custom1":            "tv",
+		"d.directory":          "/downloads/one",
+		"d.complete":           1,
+		"d.ratio":              1500,
+		"d.creation_date":      1700000000,
+		"d.timestamp.finished": 1700000200,
+		"d.timestamp.started":  1700000100,
+	})
+
+	_, err := client.GetTorrent(context.Background(), "HASH1")
+	require.NoError(t, err)
+
+	require.Len(t, fs.calls, 1)
+	require.Equal(t, "system.multicall", fs.calls[0].method)
+	require.Equal(t, []interface{}{multicallParams("HASH1",
+		"d.name", "d.size_bytes", "d.custom1", "d.directory", "d.complete", "d.ratio",
+		"d.creation_date", "d.timestamp.finished", "d.timestamp.started",
+	)}, fs.calls[0].params)
+}
+
+func TestClient_GetStatus_Multicall(t *testing.T) {
+	client, fs := newFakeServer(t, map[string]interface{}{
+		"d.complete":        1,
+		"d.completed_bytes": 50,
+		"d.down.rate":       10,
+		"d.up.rate":         5,
+		"d.ratio":           250,
+		"d.size_bytes":      100,
+	})
+
+	status, err := client.GetStatus(context.Background(), Torrent{Hash: "HASH1"})
+	require.NoError(t, err)
+	require.True(t, status.Completed)
+
+	require.Len(t, fs.calls, 1)
+	require.Equal(t, "system.multicall", fs.calls[0].method)
+	require.Equal(t, []interface{}{multicallParams("HASH1",
+		"d.complete", "d.completed_bytes", "d.down.rate", "d.up.rate", "d.ratio", "d.size_bytes",
+	)}, fs.calls[0].params)
+}
+
+func multicallParams(hash string, methods ...string) []interface{} {
+	calls := make([]interface{}, 0, len(methods))
+	for _, m := range methods {
+		calls = append(calls, map[string]interface{}{"methodName": m, "params": []interface{}{hash}})
+	}
+	return calls
+}
+
 func TestClient_UnexpectedResponses(t *testing.T) {
 	ctx := context.Background()
 	torrent := Torrent{Hash: "HASH1"}
+
+	// torrentResponses answers every call GetTorrent and GetStatus make; a nil override removes the method.
+	torrentResponses := func(override map[string]interface{}) map[string]interface{} {
+		responses := map[string]interface{}{
+			"d.name":               "name-1",
+			"d.size_bytes":         100,
+			"d.custom1":            "tv",
+			"d.directory":          "/downloads/one",
+			"d.complete":           1,
+			"d.completed_bytes":    50,
+			"d.down.rate":          10,
+			"d.up.rate":            5,
+			"d.ratio":              1500,
+			"d.creation_date":      1700000000,
+			"d.timestamp.finished": 1700000200,
+			"d.timestamp.started":  1700000100,
+		}
+		for k, v := range override {
+			if v == nil {
+				delete(responses, k)
+				continue
+			}
+			responses[k] = v
+		}
+		return responses
+	}
 
 	ip := func(c *Client) error { _, err := c.IP(ctx); return err }
 	name := func(c *Client) error { _, err := c.Name(ctx); return err }
@@ -406,6 +523,8 @@ func TestClient_UnexpectedResponses(t *testing.T) {
 	isActive := func(c *Client) error { _, err := c.IsActive(ctx, torrent); return err }
 	isOpen := func(c *Client) error { _, err := c.IsOpen(ctx, torrent); return err }
 	state := func(c *Client) error { _, err := c.State(ctx, torrent); return err }
+	getTorrent := func(c *Client) error { _, err := c.GetTorrent(ctx, "HASH1"); return err }
+	getStatus := func(c *Client) error { _, err := c.GetStatus(ctx, torrent); return err }
 	getTorrents := func(c *Client) error { _, err := c.GetTorrents(ctx, ViewMain); return err }
 	getFiles := func(c *Client) error { _, err := c.GetFiles(ctx, torrent); return err }
 
@@ -434,6 +553,13 @@ func TestClient_UnexpectedResponses(t *testing.T) {
 		{name: "GetFiles empty", responses: map[string]interface{}{"f.multicall": noParams{}}, run: getFiles, wantErr: "f.multicall"},
 		{name: "GetFiles short row", responses: map[string]interface{}{"f.multicall": []interface{}{[]interface{}{"a.mkv"}}}, run: getFiles, wantErr: "f.size_bytes"},
 		{name: "GetFiles wrong type", responses: map[string]interface{}{"f.multicall": []interface{}{[]interface{}{1, 100}}}, run: getFiles, wantErr: "f.path"},
+		{name: "GetTorrent fault", responses: torrentResponses(map[string]interface{}{"d.ratio": nil}), run: getTorrent, wantErr: "d.ratio XMLRPC call failed"},
+		{name: "GetTorrent empty entry", responses: torrentResponses(map[string]interface{}{"d.custom1": noParams{}}), run: getTorrent, wantErr: "d.custom1"},
+		{name: "GetTorrent wrong type", responses: torrentResponses(map[string]interface{}{"d.size_bytes": "100"}), run: getTorrent, wantErr: "d.size_bytes"},
+		{name: "GetTorrent multicall empty", responses: map[string]interface{}{"system.multicall": noParams{}}, run: getTorrent, wantErr: "system.multicall"},
+		{name: "GetTorrent multicall too few entries", responses: map[string]interface{}{"system.multicall": []interface{}{[]interface{}{"name-1"}}}, run: getTorrent, wantErr: "system.multicall"},
+		{name: "GetStatus fault", responses: torrentResponses(map[string]interface{}{"d.up.rate": xmlrpc.Fault{Code: -501, Message: "invalid"}}), run: getStatus, wantErr: "d.up.rate XMLRPC call failed: -501: invalid"},
+		{name: "GetStatus wrong type", responses: torrentResponses(map[string]interface{}{"d.complete": "yes"}), run: getStatus, wantErr: "d.complete"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
