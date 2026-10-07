@@ -7,9 +7,17 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
+)
+
+const (
+	// maxErrorBodyBytes caps how much of a non-2xx body ends up in the error
+	maxErrorBodyBytes = 512
+	// maxDrainBytes caps how much is read to allow connection reuse
+	maxDrainBytes = 64 << 10
 )
 
 // Client implements a basic XMLRPC client
@@ -94,7 +102,18 @@ func (c *Client) Call(ctx context.Context, name string, args ...interface{}) (in
 	if err != nil {
 		return nil, errors.Wrap(err, "POST failed")
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
+		resp.Body.Close()
+	}()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		if snippet := strings.TrimSpace(string(body)); snippet != "" {
+			return nil, errors.Errorf("unexpected status: %s: %s", resp.Status, snippet)
+		}
+		return nil, errors.Errorf("unexpected status: %s", resp.Status)
+	}
 
 	_, val, fault, err := Unmarshal(resp.Body)
 	if fault != nil {
