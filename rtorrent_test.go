@@ -227,6 +227,35 @@ func TestClient_GetTorrents(t *testing.T) {
 	require.Equal(t, "seeding", fs.calls[0].params[1])
 }
 
+func TestClient_GetTorrent(t *testing.T) {
+	client, _ := newFakeServer(t, map[string]interface{}{
+		"d.name":               "name-1",
+		"d.size_bytes":         100,
+		"d.custom1":            "tv",
+		"d.directory":          "/downloads/one",
+		"d.complete":           1,
+		"d.ratio":              1500,
+		"d.creation_date":      1700000000,
+		"d.timestamp.finished": 1700000200,
+		"d.timestamp.started":  1700000100,
+	})
+
+	torrent, err := client.GetTorrent(context.Background(), "HASH1")
+	require.NoError(t, err)
+	require.Equal(t, Torrent{
+		Hash:      "HASH1",
+		Name:      "name-1",
+		Path:      "/downloads/one",
+		Size:      100,
+		Label:     "tv",
+		Completed: true,
+		Ratio:     1.5,
+		Created:   time.Unix(1700000000, 0),
+		Finished:  time.Unix(1700000200, 0),
+		Started:   time.Unix(1700000100, 0),
+	}, torrent)
+}
+
 func TestClient_GetFiles(t *testing.T) {
 	client, fs := newFakeServer(t, map[string]interface{}{
 		"f.multicall": []interface{}{

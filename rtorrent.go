@@ -544,7 +544,7 @@ func (r *Client) GetTorrent(ctx context.Context, hash string) (Torrent, error) {
 	if err != nil {
 		return t, errors.Wrap(err, fmt.Sprintf("%s XMLRPC call failed", string(DStartedTime)))
 	}
-	t.Created = time.Unix(int64(results.([]interface{})[0].(int)), 0)
+	t.Started = time.Unix(int64(results.([]interface{})[0].(int)), 0)
 
 	return t, nil
 }
