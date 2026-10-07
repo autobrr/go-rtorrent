@@ -664,7 +664,7 @@ func (r *Client) multicall(ctx context.Context, fields []Field, params ...interf
 		if fault, ok := entry.(map[string]interface{}); ok {
 			code, _ := fault["faultCode"].(int)
 			msg, _ := fault["faultString"].(string)
-			return nil, errors.Wrap(xmlrpc.Fault{Code: code, Message: msg}, fmt.Sprintf("%s XMLRPC call failed", fields[i]))
+			return nil, errors.Wrap(&xmlrpc.Fault{Code: code, Message: msg}, fmt.Sprintf("%s XMLRPC call failed", fields[i]))
 		}
 		v, err := single(entry)
 		if err != nil {

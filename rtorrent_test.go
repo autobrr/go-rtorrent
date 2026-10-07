@@ -2,6 +2,7 @@ package rtorrent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -482,6 +483,24 @@ func multicallParams(hash string, methods ...string) []interface{} {
 		calls = append(calls, map[string]interface{}{"methodName": m, "params": []interface{}{hash}})
 	}
 	return calls
+}
+
+func TestClient_Multicall_Fault(t *testing.T) {
+	client, _ := newFakeServer(t, map[string]interface{}{
+		"d.complete":        0,
+		"d.completed_bytes": 50,
+		"d.down.rate":       10,
+		"d.up.rate":         xmlrpc.Fault{Code: -501, Message: "invalid"},
+		"d.ratio":           250,
+		"d.size_bytes":      100,
+	})
+
+	_, err := client.GetStatus(context.Background(), Torrent{Hash: "HASH1"})
+	require.ErrorContains(t, err, "d.up.rate XMLRPC call failed")
+
+	var fault *xmlrpc.Fault
+	require.True(t, errors.As(err, &fault))
+	require.Equal(t, -501, fault.Code)
 }
 
 func TestClient_UnexpectedResponses(t *testing.T) {
