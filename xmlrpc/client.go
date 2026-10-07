@@ -82,7 +82,8 @@ func NewClientWithHTTPClient(addr string, client *http.Client) *Client {
 }
 
 // Call calls the method with "name" with the given args
-// Returns the result, and an error for communication errors
+// Returns the result, and an error for communication errors.
+// An XML-RPC fault response is returned as a *Fault error.
 func (c *Client) Call(ctx context.Context, name string, args ...interface{}) (interface{}, error) {
 	data := bytes.NewBuffer(nil)
 	if err := Marshal(data, name, args...); err != nil {
@@ -117,7 +118,7 @@ func (c *Client) Call(ctx context.Context, name string, args ...interface{}) (in
 
 	_, val, fault, err := Unmarshal(resp.Body)
 	if fault != nil {
-		err = errors.Errorf("Error: %v: %v", err, fault)
+		return val, fault
 	}
 	return val, err
 }

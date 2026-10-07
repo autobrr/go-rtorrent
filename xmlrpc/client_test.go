@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	pkgerrors "github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,6 +68,29 @@ func TestClient_Call_UnexpectedStatus_TruncatesBody(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unexpected status: 500 Internal Server Error")
 	require.Less(t, len(err.Error()), 1024)
+}
+
+func TestClient_Call_Fault(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		writeResponse(t, w, Fault{Code: -506, Message: "method 'nope' not defined"})
+	})
+
+	_, err := c.Call(context.Background(), "nope")
+	require.Error(t, err)
+	require.Equal(t, "-506: method 'nope' not defined", err.Error())
+
+	var fault *Fault
+	require.True(t, errors.As(err, &fault))
+	require.Equal(t, -506, fault.Code)
+	require.Equal(t, "method 'nope' not defined", fault.Message)
+
+	// the root package wraps errors with pkg/errors
+	wrapped := pkgerrors.Wrap(err, "nope failed")
+	require.Equal(t, "nope failed: -506: method 'nope' not defined", wrapped.Error())
+
+	fault = nil
+	require.True(t, errors.As(wrapped, &fault))
+	require.Equal(t, -506, fault.Code)
 }
 
 func TestClient_Call_BasicAuth(t *testing.T) {
