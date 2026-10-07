@@ -34,6 +34,8 @@ type Config struct {
 
 type OptFunc func(*Client)
 
+// WithCustomClient uses the given http.Client for requests. Basic auth from the Config is kept, but TLSSkipVerify
+// is not applied, configure TLS on the given client instead.
 func WithCustomClient(client *http.Client) OptFunc {
 	return func(c *Client) {
 		c.xmlrpcClient = xmlrpc.NewClient(xmlrpc.Config{
@@ -48,28 +50,13 @@ func WithCustomClient(client *http.Client) OptFunc {
 
 // NewClient returns a new instance of `Client`
 func NewClient(cfg Config) *Client {
-	c := &Client{
-		addr: cfg.Addr,
-		log:  log.New(io.Discard, "", log.LstdFlags),
-		xmlrpcClient: xmlrpc.NewClient(xmlrpc.Config{
-			Addr:          cfg.Addr,
-			TLSSkipVerify: cfg.TLSSkipVerify,
-			BasicUser:     cfg.BasicUser,
-			BasicPass:     cfg.BasicPass,
-		}),
-	}
-
-	// override logger if we pass one
-	if cfg.Log != nil {
-		c.log = cfg.Log
-	}
-
-	return c
+	return NewClientWithOpts(cfg)
 }
 
 // WithHTTPClient allows you to a provide a custom http.Client.
+// Basic auth from the Config is kept. TLSSkipVerify is not applied, configure TLS on the given client instead.
 func (r *Client) WithHTTPClient(client *http.Client) *Client {
-	r.xmlrpcClient = xmlrpc.NewClientWithHTTPClient(r.addr, client)
+	WithCustomClient(client)(r)
 	return r
 }
 

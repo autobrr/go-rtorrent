@@ -334,3 +334,48 @@ func TestClient_BasicAuth(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "host", name)
 }
+
+func TestClient_WithHTTPClient_BasicAuth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "user" || pass != "pass" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = xmlrpc.Marshal(w, "", "host")
+	}))
+	t.Cleanup(srv.Close)
+
+	tests := []struct {
+		name   string
+		client func(cfg Config, hc *http.Client) *Client
+	}{
+		{
+			name: "NewClient WithHTTPClient",
+			client: func(cfg Config, hc *http.Client) *Client {
+				return NewClient(cfg).WithHTTPClient(hc)
+			},
+		},
+		{
+			name: "NewClientWithOpts WithHTTPClient",
+			client: func(cfg Config, hc *http.Client) *Client {
+				return NewClientWithOpts(cfg).WithHTTPClient(hc)
+			},
+		},
+		{
+			name: "WithCustomClient",
+			client: func(cfg Config, hc *http.Client) *Client {
+				return NewClientWithOpts(cfg, WithCustomClient(hc))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := tt.client(Config{Addr: srv.URL, BasicUser: "user", BasicPass: "pass"}, &http.Client{Timeout: time.Second})
+
+			name, err := client.Name(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, "host", name)
+		})
+	}
+}
