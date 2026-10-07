@@ -70,6 +70,14 @@ func TestRTorrent(t *testing.T) {
 		require.Zero(t, rate, "expected no upload yet")
 	})
 
+	t.Run("views", func(t *testing.T) {
+		views, err := client.Views(ctx)
+		require.NoError(t, err)
+		require.Contains(t, views, ViewMain)
+		// ruTorrent's ratio plugin inserts its ratio groups as persistent views rat_0 to rat_7
+		require.Contains(t, views, View("rat_1"))
+	})
+
 	t.Run("get no torrents", func(t *testing.T) {
 		torrents, err := client.GetTorrents(ctx, ViewMain)
 		require.NoError(t, err)
@@ -622,6 +630,39 @@ func TestRTorrent(t *testing.T) {
 					})
 				})
 			})
+		})
+
+		t.Run("with data (stopped) in ratio group with priority", func(t *testing.T) {
+			b, err := os.ReadFile("testdata/ubuntu-24.10-desktop-amd64.iso.torrent")
+			require.NoError(t, err)
+
+			err = client.AddTorrentStopped(ctx, b, Command("view.set_visible", "rat_1"), DPriority.SetValue("3"))
+			require.NoError(t, err)
+
+			var torrents []Torrent
+			for i := 0; i <= maxRetries; i++ {
+				<-time.After(time.Second)
+				torrents, err = client.GetTorrents(ctx, View("rat_1"))
+				require.NoError(t, err)
+				if len(torrents) > 0 {
+					break
+				}
+				if i == maxRetries {
+					require.NoError(t, errors.Errorf("torrent did not show up in ratio group in time"))
+				}
+			}
+			require.Len(t, torrents, 1)
+
+			views, err := client.xmlrpcClient.Call(ctx, "d.views", torrents[0].Hash)
+			require.NoError(t, err)
+			require.Equal(t, []interface{}{[]interface{}{"rat_1"}}, views)
+
+			priority, err := client.xmlrpcClient.Call(ctx, "d.priority", torrents[0].Hash)
+			require.NoError(t, err)
+			require.Equal(t, []interface{}{3}, priority)
+
+			err = client.Delete(ctx, torrents[0])
+			require.NoError(t, err)
 		})
 	})
 
